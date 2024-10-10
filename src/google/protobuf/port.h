@@ -40,6 +40,8 @@ class MessageLite;
 
 namespace internal {
 
+struct MessageTraitsImpl;
+
 template <typename T>
 inline PROTOBUF_ALWAYS_INLINE void StrongPointer(T* var) {
 #if defined(__GNUC__)
@@ -61,9 +63,10 @@ inline PROTOBUF_ALWAYS_INLINE void StrongPointer() {
   asm(".reloc ., BFD_RELOC_NONE, %p0" ::"Ws"(ptr));
 }
 
-template <typename T>
+template <typename T, typename TraitsImpl = MessageTraitsImpl>
 inline PROTOBUF_ALWAYS_INLINE void StrongReferenceToType() {
-  static constexpr auto ptr = T::template GetStrongPointerForType<T>();
+  static constexpr auto ptr =
+      decltype(TraitsImpl::template value<T>)::StrongPointer();
   // This is identical to the implementation of StrongPointer() above, but it
   // has to be explicitly inlined here or else Clang 19 will raise an error in
   // some configurations.
@@ -77,9 +80,10 @@ inline PROTOBUF_ALWAYS_INLINE void StrongPointer() {
   StrongPointer(ptr);
 }
 
-template <typename T>
+template <typename T, typename TraitsImpl = MessageTraitsImpl>
 inline PROTOBUF_ALWAYS_INLINE void StrongReferenceToType() {
-  return StrongPointer(T::template GetStrongPointerForType<T>());
+  return StrongPointer(
+      decltype(TraitsImpl::template value<T>)::StrongPointer());
 }
 #endif  // .reloc
 
@@ -289,6 +293,18 @@ constexpr bool DebugHardenFuzzMessageSpaceUsedLong() {
   return false;
 }
 
+// Reads n bytes from p, if PerformDebugChecks() is true. This allows ASAN to
+// detect if a range of memory is not valid when we expect it to be. The
+// volatile keyword is necessary here to prevent the compiler from optimizing
+// away the memory reads below.
+inline void AssertBytesAreReadable(const volatile char* p, int n) {
+  if (PerformDebugChecks()) {
+    for (int i = 0; i < n; ++i) {
+      p[i];
+    }
+  }
+}
+
 // Returns true if pointers are 8B aligned, leaving least significant 3 bits
 // available.
 inline constexpr bool PtrIsAtLeast8BAligned() { return alignof(void*) >= 8; }
@@ -379,7 +395,13 @@ constexpr T* Launder(T* p) {
 #endif
 }
 
-#if ABSL_HAVE_BUILTIN(__is_bitwise_cloneable)
+#if defined(PROTOBUF_CUSTOM_VTABLE)
+constexpr bool EnableCustomNew() { return true; }
+template <typename T>
+constexpr bool EnableCustomNewFor() {
+  return true;
+}
+#elif ABSL_HAVE_BUILTIN(__is_bitwise_cloneable)
 constexpr bool EnableCustomNew() { return true; }
 template <typename T>
 constexpr bool EnableCustomNewFor() {

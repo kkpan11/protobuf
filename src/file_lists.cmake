@@ -364,8 +364,10 @@ set(libprotoc_srcs
   ${protobuf_SOURCE_DIR}/src/google/protobuf/compiler/java/name_resolver.cc
   ${protobuf_SOURCE_DIR}/src/google/protobuf/compiler/java/names.cc
   ${protobuf_SOURCE_DIR}/src/google/protobuf/compiler/java/shared_code_generator.cc
+  ${protobuf_SOURCE_DIR}/src/google/protobuf/compiler/kotlin/field.cc
   ${protobuf_SOURCE_DIR}/src/google/protobuf/compiler/kotlin/file.cc
   ${protobuf_SOURCE_DIR}/src/google/protobuf/compiler/kotlin/generator.cc
+  ${protobuf_SOURCE_DIR}/src/google/protobuf/compiler/kotlin/message.cc
   ${protobuf_SOURCE_DIR}/src/google/protobuf/compiler/objectivec/enum.cc
   ${protobuf_SOURCE_DIR}/src/google/protobuf/compiler/objectivec/enum_field.cc
   ${protobuf_SOURCE_DIR}/src/google/protobuf/compiler/objectivec/extension.cc
@@ -502,8 +504,10 @@ set(libprotoc_hdrs
   ${protobuf_SOURCE_DIR}/src/google/protobuf/compiler/java/names.h
   ${protobuf_SOURCE_DIR}/src/google/protobuf/compiler/java/options.h
   ${protobuf_SOURCE_DIR}/src/google/protobuf/compiler/java/shared_code_generator.h
+  ${protobuf_SOURCE_DIR}/src/google/protobuf/compiler/kotlin/field.h
   ${protobuf_SOURCE_DIR}/src/google/protobuf/compiler/kotlin/file.h
   ${protobuf_SOURCE_DIR}/src/google/protobuf/compiler/kotlin/generator.h
+  ${protobuf_SOURCE_DIR}/src/google/protobuf/compiler/kotlin/message.h
   ${protobuf_SOURCE_DIR}/src/google/protobuf/compiler/objectivec/enum.h
   ${protobuf_SOURCE_DIR}/src/google/protobuf/compiler/objectivec/enum_field.h
   ${protobuf_SOURCE_DIR}/src/google/protobuf/compiler/objectivec/extension.h
@@ -1082,6 +1086,7 @@ set(protobuf_test_files
   ${protobuf_SOURCE_DIR}/src/google/protobuf/map_field_test.cc
   ${protobuf_SOURCE_DIR}/src/google/protobuf/map_test.cc
   ${protobuf_SOURCE_DIR}/src/google/protobuf/message_unittest.cc
+  ${protobuf_SOURCE_DIR}/src/google/protobuf/no_field_presence_map_test.cc
   ${protobuf_SOURCE_DIR}/src/google/protobuf/no_field_presence_test.cc
   ${protobuf_SOURCE_DIR}/src/google/protobuf/port_test.cc
   ${protobuf_SOURCE_DIR}/src/google/protobuf/preserve_unknown_enum_test.cc
@@ -1095,8 +1100,10 @@ set(protobuf_test_files
   ${protobuf_SOURCE_DIR}/src/google/protobuf/reflection_visit_fields_test.cc
   ${protobuf_SOURCE_DIR}/src/google/protobuf/repeated_field_reflection_unittest.cc
   ${protobuf_SOURCE_DIR}/src/google/protobuf/repeated_field_unittest.cc
+  ${protobuf_SOURCE_DIR}/src/google/protobuf/repeated_ptr_field_unittest.cc
   ${protobuf_SOURCE_DIR}/src/google/protobuf/retention_test.cc
   ${protobuf_SOURCE_DIR}/src/google/protobuf/string_block_test.cc
+  ${protobuf_SOURCE_DIR}/src/google/protobuf/string_piece_field_support_unittest.cc
   ${protobuf_SOURCE_DIR}/src/google/protobuf/string_view_test.cc
   ${protobuf_SOURCE_DIR}/src/google/protobuf/text_format_unittest.cc
   ${protobuf_SOURCE_DIR}/src/google/protobuf/unknown_field_set_unittest.cc

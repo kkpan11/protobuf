@@ -113,6 +113,8 @@ struct ConstructorTag {
 
   bool operator<(const ConstructorTag&) const { return false; }
 
+  bool operator==(const ConstructorTag&) const { return true; }
+
   ConstructorType invoked_constructor;
 };
 
@@ -315,16 +317,6 @@ TEST_F(MapImplTest, OperatorBracket) {
 }  // namespace protobuf
 }  // namespace google
 
-namespace std {
-
-template <>  // NOLINT
-struct hash<google::protobuf::internal::MoveTestKey> {
-  size_t operator()(const google::protobuf::internal::MoveTestKey& key) const {
-    return hash<uint64_t>{}(key.data);
-  }
-};
-}  // namespace std
-
 namespace google {
 namespace protobuf {
 namespace internal {
@@ -334,6 +326,45 @@ struct RealKeyToVariantKey<MoveTestKey> {
   VariantKey operator()(const MoveTestKey& value) const {
     return VariantKey(value.data);
   }
+};
+
+template <>
+struct RealKeyToVariantKeyAlternative<MoveTestKey> {
+  VariantKey operator()(const MoveTestKey& value) const {
+    return VariantKey(value.data);
+  }
+};
+
+template <>
+struct TransparentSupport<MoveTestKey> {
+  using hash = absl::Hash<MoveTestKey>;
+
+  static bool Equals(const MoveTestKey& a, const MoveTestKey& b) {
+    return a == b;
+  }
+
+  template <typename K>
+  using key_arg = MoveTestKey;
+
+  using ViewType = const MoveTestKey&;
+
+  static ViewType ToView(ViewType v) { return v; }
+};
+
+template <>
+struct TransparentSupport<ConstructorTag> {
+  using hash = absl::Hash<ConstructorTag>;
+
+  static bool Equals(const ConstructorTag& a, const ConstructorTag& b) {
+    return a == b;
+  }
+
+  template <typename K>
+  using key_arg = ConstructorTag;
+
+  using ViewType = const ConstructorTag&;
+
+  static ViewType ToView(ViewType v) { return v; }
 };
 
 namespace {
@@ -1010,7 +1041,7 @@ TEST_F(MapImplTest, EraseSingleByKey) {
   EXPECT_EQ(0, map_.erase(key));
 }
 
-TEST_F(MapImplTest, EraseMutipleByKey) {
+TEST_F(MapImplTest, EraseMultipleByKey) {
   // erase in one specific order to trigger corner cases
   for (int i = 0; i < 5; i++) {
     map_[i] = i;
@@ -2733,7 +2764,7 @@ TEST(GeneratedMapFieldTest, Proto2UnknownEnum) {
   EXPECT_EQ(UNITTEST::PROTO2_MAP_ENUM_FOO, to.known_map_field().at(0));
 }
 
-TEST(GeneratedMapFieldTest, Proto2UknownEnumThrowsAwayUnknownData) {
+TEST(GeneratedMapFieldTest, Proto2UnknownEnumThrowsAwayUnknownData) {
   UNITTEST::TestEnumMap to;
   // 101: {
   //   1: 2

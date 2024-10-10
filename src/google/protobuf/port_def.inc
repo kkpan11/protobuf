@@ -160,16 +160,6 @@ static_assert(PROTOBUF_ABSL_MIN(20230125, 3),
 #define PROTOBUF_FUTURE_STRING_VIEW_RETURN_TYPE 1
 #endif
 
-#ifdef PROTOBUF_MINIMUM_EDITION
-#error PROTOBUF_MINIMUM_EDITION was previously defined
-#endif
-#define PROTOBUF_MINIMUM_EDITION EDITION_PROTO2
-
-#ifdef PROTOBUF_MAXIMUM_EDITION
-#error PROTOBUF_MAXIMUM_EDITION was previously defined
-#endif
-#define PROTOBUF_MAXIMUM_EDITION EDITION_2023
-
 #ifdef PROTOBUF_ALWAYS_INLINE
 #error PROTOBUF_ALWAYS_INLINE was previously defined
 #endif
@@ -634,7 +624,7 @@ static_assert(PROTOBUF_ABSL_MIN(20230125, 3),
 #define PROTOBUF_UNUSED
 #endif
 
-// For the toolchains that support it, evalutes to `true` if the input is
+// For the toolchains that support it, evaluates to `true` if the input is
 // determined to be a compile time constant after optimizations have happened
 // (like inlining and constant propagation). A `false` result means that the
 // compiler could not determine it is constant (it might still be but couldn't

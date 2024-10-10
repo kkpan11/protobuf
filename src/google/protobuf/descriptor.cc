@@ -258,6 +258,16 @@ using IntT = int;
 template <typename T>
 using PointerT = T*;
 
+// State that we gather during EstimatedMemoryUsed while on the lock, but we
+// will use outside the lock.
+struct EstimatedMemoryUsedState {
+  // We can't call SpaceUsed under the lock because it uses reflection and can
+  // potentially deadlock if it requires to load new files into the pool.
+  // NOTE: Messages added here must not be modified or destroyed outside the
+  // lock while the pool is alive.
+  std::vector<const Message*> messages;
+};
+
 // Manages an allocation of sequential arrays of type `T...`.
 // It is more space efficient than storing N (ptr, size) pairs, by storing only
 // the pointer to the head and the boundaries between the arrays.
@@ -573,17 +583,11 @@ class FlatAllocatorImpl {
   TypeMap<IntT, T...> used_;
 };
 
-// Allows us to disable tracking in the current thread while certain build steps
-// are happening.
-bool& is_tracking_enabled() {
-  static PROTOBUF_THREAD_LOCAL bool value = true;
-  return value;
-}
-
-auto DisableTracking() {
-  bool old_value = is_tracking_enabled();
-  is_tracking_enabled() = false;
-  return absl::MakeCleanup([=] { is_tracking_enabled() = old_value; });
+static auto DisableTracking() {
+  bool old_value = internal::cpp::IsTrackingEnabled();
+  internal::cpp::IsTrackingEnabledVar() = false;
+  return absl::MakeCleanup(
+      [=] { internal::cpp::IsTrackingEnabledVar() = old_value; });
 }
 
 }  // namespace
@@ -7952,32 +7956,6 @@ void DescriptorBuilder::ValidateOptions(const FieldDescriptor* field,
 
   ValidateFieldFeatures(field, proto);
 
-  auto edition = field->file()->edition();
-  auto& field_options = field->options();
-
-  if (field_options.has_ctype()) {
-    if (edition == Edition::EDITION_2023) {
-      if (field->cpp_type() != FieldDescriptor::CPPTYPE_STRING) {
-        AddError(field->full_name(), proto,
-                 DescriptorPool::ErrorCollector::TYPE,
-                 absl::StrFormat("Field %s specifies ctype, but is not a "
-                                 "string nor bytes field.",
-                                 field->full_name())
-                     .c_str());
-      }
-      if (field_options.ctype() == FieldOptions::CORD) {
-        if (field->is_extension()) {
-          AddError(field->full_name(), proto,
-                   DescriptorPool::ErrorCollector::TYPE,
-                   absl::StrFormat("Extension %s specifies ctype=CORD which is "
-                                   "not supported for extensions.",
-                                   field->full_name())
-                       .c_str());
-        }
-      }
-    }
-  }
-
   // Only message type fields may be lazy.
   if (field->options().lazy() || field->options().unverified_lazy()) {
     if (field->type() != FieldDescriptor::TYPE_MESSAGE) {
@@ -9352,8 +9330,8 @@ bool DescriptorBuilder::OptionInterpreter::SetOptionValue(
         // the pool's mutex, and the latter method locks it again.
         Symbol symbol =
             builder_->FindSymbolNotEnforcingDeps(fully_qualified_name);
-        if (auto* candicate_descriptor = symbol.enum_value_descriptor()) {
-          if (candicate_descriptor->type() != enum_type) {
+        if (auto* candidate_descriptor = symbol.enum_value_descriptor()) {
+          if (candidate_descriptor->type() != enum_type) {
             return AddValueError([&] {
               return absl::StrCat(
                   "Enum type \"", enum_type->full_name(),
@@ -9362,7 +9340,7 @@ bool DescriptorBuilder::OptionInterpreter::SetOptionValue(
                   "\". This appears to be a value from a sibling type.");
             });
           } else {
-            enum_value = candicate_descriptor;
+            enum_value = candidate_descriptor;
           }
         }
       } else {
@@ -9877,8 +9855,6 @@ bool IsLazilyInitializedFile(absl::string_view filename) {
   return filename == "net/proto2/proto/descriptor.proto" ||
          filename == "google/protobuf/descriptor.proto";
 }
-
-bool IsTrackingEnabled() { return is_tracking_enabled(); }
 
 }  // namespace cpp
 }  // namespace internal

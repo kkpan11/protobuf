@@ -375,8 +375,9 @@ void __asan_unpoison_memory_region(void const volatile *addr, size_t size);
 
 #if defined(__ELF__) || defined(__wasm__)
 
-#define UPB_LINKARR_APPEND(name) \
-  __attribute__((retain, used, section("linkarr_" #name)))
+#define UPB_LINKARR_APPEND(name)                          \
+  __attribute__((retain, used, section("linkarr_" #name), \
+                 no_sanitize("address")))
 #define UPB_LINKARR_DECLARE(name, type)     \
   extern type const __start_linkarr_##name; \
   extern type const __stop_linkarr_##name;  \
@@ -387,8 +388,9 @@ void __asan_unpoison_memory_region(void const volatile *addr, size_t size);
 #elif defined(__MACH__)
 
 /* As described in: https://stackoverflow.com/a/22366882 */
-#define UPB_LINKARR_APPEND(name) \
-  __attribute__((retain, used, section("__DATA,__la_" #name)))
+#define UPB_LINKARR_APPEND(name)                              \
+  __attribute__((retain, used, section("__DATA,__la_" #name), \
+                 no_sanitize("address")))
 #define UPB_LINKARR_DECLARE(name, type)           \
   extern type const __start_linkarr_##name __asm( \
       "section$start$__DATA$__la_" #name);        \
@@ -408,8 +410,9 @@ void __asan_unpoison_memory_region(void const volatile *addr, size_t size);
 
 // Usage of __attribute__ here probably means this is Clang-specific, and would
 // not work on MSVC.
-#define UPB_LINKARR_APPEND(name) \
-  __declspec(allocate("la_" #name "$j")) __attribute__((retain, used))
+#define UPB_LINKARR_APPEND(name)         \
+  __declspec(allocate("la_" #name "$j")) \
+  __attribute__((retain, used, no_sanitize("address")))
 #define UPB_LINKARR_DECLARE(name, type)                               \
   __declspec(allocate("la_" #name "$a")) type __start_linkarr_##name; \
   __declspec(allocate("la_" #name "$z")) type __stop_linkarr_##name;  \
@@ -422,6 +425,17 @@ void __asan_unpoison_memory_region(void const volatile *addr, size_t size);
 // Linker arrays are not supported on this platform.  Make appends a no-op but
 // don't define the other macros.
 #define UPB_LINKARR_APPEND(name)
+
+#endif
+
+// Future versions of upb will include breaking changes to some APIs.
+// This macro can be set to enable these API changes ahead of time, so that
+// user code can be updated before upgrading versions of protobuf.
+#ifdef UPB_FUTURE_BREAKING_CHANGES
+
+// Properly enforce closed enums in python.
+// Owner: mkruskal@
+#define UPB_FUTURE_PYTHON_CLOSED_ENUM_ENFORCEMENT 1
 
 #endif
 
@@ -5025,7 +5039,7 @@ enum {
    *    already has some sub-message fields present.  If the sub-message does
    *    not occur in the binary payload, we will never visit it and discover the
    *    incomplete sub-message.  For this reason, this check is only useful for
-   *    implemting ParseFromString() semantics.  For MergeFromString(), a
+   *    implementing ParseFromString() semantics.  For MergeFromString(), a
    *    post-parse validation step will always be necessary. */
   kUpb_DecodeOption_CheckRequired = 2,
 
@@ -15346,3 +15360,5 @@ upb_MethodDef* _upb_MethodDefs_New(upb_DefBuilder* ctx, int n,
 #undef UPB_LINKARR_APPEND
 #undef UPB_LINKARR_START
 #undef UPB_LINKARR_STOP
+#undef UPB_FUTURE_BREAKING_CHANGES
+#undef UPB_FUTURE_PYTHON_CLOSED_ENUM_ENFORCEMENT
