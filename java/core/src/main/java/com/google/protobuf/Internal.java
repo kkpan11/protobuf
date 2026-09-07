@@ -7,17 +7,21 @@
 
 package com.google.protobuf;
 
+import static java.nio.charset.StandardCharsets.ISO_8859_1;
+import static java.nio.charset.StandardCharsets.UTF_8;
+
 import java.lang.reflect.Method;
 import java.nio.Buffer;
 import java.nio.ByteBuffer;
-import java.nio.charset.Charset;
 import java.util.AbstractList;
 import java.util.AbstractMap;
 import java.util.AbstractSet;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.RandomAccess;
 import java.util.Set;
 
@@ -32,11 +36,8 @@ public final class Internal {
 
   private Internal() {}
 
-  static final Charset US_ASCII = Charset.forName("US-ASCII");
-  static final Charset UTF_8 = Charset.forName("UTF-8");
-  static final Charset ISO_8859_1 = Charset.forName("ISO-8859-1");
-
   /** Throws an appropriate {@link NullPointerException} if the given objects is {@code null}. */
+  @CanIgnoreReturnValue
   static <T> T checkNotNull(T obj) {
     if (obj == null) {
       throw new NullPointerException();
@@ -45,11 +46,25 @@ public final class Internal {
   }
 
   /** Throws an appropriate {@link NullPointerException} if the given objects is {@code null}. */
+  @CanIgnoreReturnValue
   static <T> T checkNotNull(T obj, String message) {
     if (obj == null) {
       throw new NullPointerException(message);
     }
     return obj;
+  }
+
+  /**
+   * Throws an {@link IllegalArgumentException} for unrecognized enum values.
+   *
+   * <p>Used from Enum.getNumber().
+   *
+   * @return nothing, but typed as int, so we can "return" the result of this method directly from
+   * Enum.getNumber(), generating smaller dex code for every enum.
+   */
+  @DoNotInline
+  public static int throwCannotGetNumberOfUnrecognized() {
+    throw new IllegalArgumentException("Can't get the number of an unknown enum value.");
   }
 
   /**
@@ -346,11 +361,10 @@ public final class Internal {
     }
   }
 
-  @SuppressWarnings("unchecked")
   public static <T extends MessageLite> T getDefaultInstance(Class<T> clazz) {
     try {
       Method method = clazz.getMethod("getDefaultInstance");
-      return (T) method.invoke(method);
+      return clazz.cast(method.invoke(method));
     } catch (Exception e) {
       throw new RuntimeException("Failed to get default instance for " + clazz, e);
     }
@@ -595,6 +609,49 @@ public final class Internal {
 
     /** Returns a mutable clone of this list with the specified capacity. */
     ProtobufList<E> mutableCopyWithCapacity(int capacity);
+
+    /** Appends the values to the end of the list. */
+    static <E> ProtobufList<E> concatenate(ProtobufList<E> list, Iterable<? extends E> values) {
+      // If the list is empty and the values are a ProtobufList, we may be able to avoid a copy.
+      if (list.isEmpty() && values instanceof ProtobufList) {
+        @SuppressWarnings("unchecked")
+        ProtobufList<E> other = (ProtobufList<E>) values;
+        if (other.isEmpty()) {
+          return list;
+        }
+
+        if (!other.isModifiable()) {
+          // If the values List is immutable, we can just return it.
+          return other;
+        }
+        // Otherwise, we need to make a copy of the values List.
+        return other.mutableCopyWithCapacity(other.size());
+      }
+
+      // If values is a Collection, we can pre-size the list.
+      if (values instanceof Collection) {
+        Collection<?> other = (Collection<?>) values;
+
+        if (!list.isModifiable()) {
+          list = list.mutableCopyWithCapacity(list.size() + other.size());
+        }
+      }
+
+      Iterator<? extends E> it = values.iterator();
+      if (!it.hasNext()) {
+        // If the values Iterable is empty, we can just return the original list.
+        return list;
+      }
+
+      if (!list.isModifiable()) {
+        list = list.mutableCopyWithCapacity(list.size() + 1);
+      }
+
+      while (it.hasNext()) {
+        list.add(Objects.requireNonNull(it.next()));
+      }
+      return list;
+    }
   }
 
   /**

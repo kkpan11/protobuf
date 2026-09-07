@@ -91,6 +91,7 @@ static VALUE Map_new_this_type(Map* from) {
   VALUE arena_rb = Arena_new();
   upb_Map* map = upb_Map_New(Arena_get(arena_rb), from->key_type,
                              from->value_type_info.type);
+  if (!map) Arena_raise_oom();
   VALUE ret =
       Map_GetRubyWrapper(map, from->key_type, from->value_type_info, arena_rb);
   PBRUBY_ASSERT(ruby_to_Map(ret)->value_type_class == from->value_type_class);
@@ -134,12 +135,15 @@ VALUE Map_deep_copy(VALUE obj) {
   upb_Arena* arena = Arena_get(new_arena_rb);
   upb_Map* new_map =
       upb_Map_New(arena, self->key_type, self->value_type_info.type);
+  if (!new_map) Arena_raise_oom();
   size_t iter = kUpb_Map_Begin;
   upb_MessageValue key, val;
   while (upb_Map_Next(self->map, &key, &val, &iter)) {
     upb_MessageValue val_copy =
         Msgval_DeepCopy(val, self->value_type_info, arena);
-    upb_Map_Set(new_map, key, val_copy, arena);
+    if (!upb_Map_Set(new_map, key, val_copy, arena)) {
+      Arena_raise_oom();
+    }
   }
 
   return Map_GetRubyWrapper(new_map, self->key_type, self->value_type_info,
@@ -202,7 +206,9 @@ static int merge_into_self_callback(VALUE key, VALUE val, VALUE _self) {
       Convert_RubyToUpb(key, "", Map_keyinfo(self), arena);
   upb_MessageValue val_val =
       Convert_RubyToUpb(val, "", self->value_type_info, arena);
-  upb_Map_Set(Map_GetMutable(_self), key_val, val_val, arena);
+  if (!upb_Map_Set(Map_GetMutable(_self), key_val, val_val, arena)) {
+    Arena_raise_oom();
+  }
   return ST_CONTINUE;
 }
 
@@ -228,7 +234,9 @@ static VALUE Map_merge_into_self(VALUE _self, VALUE hashmap) {
     size_t iter = kUpb_Map_Begin;
     upb_MessageValue key, val;
     while (upb_Map_Next(other->map, &key, &val, &iter)) {
-      upb_Map_Set(self_map, key, val, arena);
+      if (!upb_Map_Set(self_map, key, val, arena)) {
+        Arena_raise_oom();
+      }
     }
   } else {
     rb_raise(rb_eArgError, "Unknown type merging into Map");
@@ -236,10 +244,15 @@ static VALUE Map_merge_into_self(VALUE _self, VALUE hashmap) {
   return _self;
 }
 
+/**
+ * ruby-doc: Map
+ *
+ * This class represents a Protobuf Map. It is largely automatically transformed
+ * to and from a Ruby hash.
+ */
+
 /*
- * call-seq:
- *     Map.new(key_type, value_type, value_typeclass = nil, init_hashmap = {})
- *     => new map
+ * ruby-doc: Map#initialize
  *
  * Allocates a new Map container. This constructor may be called with 2, 3, or 4
  * arguments. The first two arguments are always present and are symbols (taking
@@ -265,6 +278,13 @@ static VALUE Map_merge_into_self(VALUE _self, VALUE hashmap) {
  * shallow-copied into the new Map: the original map is unmodified, but
  * references to underlying objects will be shared if the value type is a
  * message type.
+ *
+ * @param key_type [Symbol]
+ * @param value_type [Symbol]
+ * @param value_typeclass [Class<AbstractMessage>,Module]
+ * @paramdefault value_typeclass nil
+ * @param init_hashmap [Hash,Map]
+ * @paramdefault init_hashmap {}
  */
 static VALUE Map_init(int argc, VALUE* argv, VALUE _self) {
   Map* self = ruby_to_Map(_self);
@@ -281,6 +301,7 @@ static VALUE Map_init(int argc, VALUE* argv, VALUE _self) {
   self->value_type_info =
       TypeInfo_FromClass(argc, argv, 1, &self->value_type_class, &init_arg);
   self->arena = Arena_new();
+  if (!self->arena) Arena_raise_oom();
 
   // Check that the key type is an allowed type.
   switch (self->key_type) {
@@ -299,6 +320,7 @@ static VALUE Map_init(int argc, VALUE* argv, VALUE _self) {
 
   self->map = upb_Map_New(Arena_get(self->arena), self->key_type,
                           self->value_type_info.type);
+  if (!self->map) Arena_raise_oom();
   VALUE stored = ObjectCache_TryAdd(self->map, _self);
   (void)stored;
   PBRUBY_ASSERT(stored == _self);
@@ -311,12 +333,14 @@ static VALUE Map_init(int argc, VALUE* argv, VALUE _self) {
 }
 
 /*
- * call-seq:
- *     Map.each(&block)
+ * ruby-doc: Map#each
  *
  * Invokes &block on each |key, value| pair in the map, in unspecified order.
  * Note that Map also includes Enumerable; map thus acts like a normal Ruby
  * sequence.
+ *
+ * @yield [Object, Object]
+ * @return [nil]
  */
 static VALUE Map_each(VALUE _self) {
   Map* self = ruby_to_Map(_self);
@@ -333,10 +357,11 @@ static VALUE Map_each(VALUE _self) {
 }
 
 /*
- * call-seq:
- *     Map.keys => [list_of_keys]
+ * ruby-doc: Map#keys
  *
  * Returns the list of keys contained in the map, in unspecified order.
+ *
+ * @return [Array<Object>]
  */
 static VALUE Map_keys(VALUE _self) {
   Map* self = ruby_to_Map(_self);
@@ -353,10 +378,11 @@ static VALUE Map_keys(VALUE _self) {
 }
 
 /*
- * call-seq:
- *     Map.values => [list_of_values]
+ * ruby-doc: Map#values
  *
  * Returns the list of values contained in the map, in unspecified order.
+ *
+ * @return [Array<Object>]
  */
 static VALUE Map_values(VALUE _self) {
   Map* self = ruby_to_Map(_self);
@@ -373,11 +399,13 @@ static VALUE Map_values(VALUE _self) {
 }
 
 /*
- * call-seq:
- *     Map.[](key) => value
+ * ruby-doc: Map#[]
  *
  * Accesses the element at the given key. Throws an exception if the key type is
  * incorrect. Returns nil when the key is not present in the map.
+ *
+ * @param key [Object]
+ * @return [Object]
  */
 static VALUE Map_index(VALUE _self, VALUE key) {
   Map* self = ruby_to_Map(_self);
@@ -393,32 +421,44 @@ static VALUE Map_index(VALUE _self, VALUE key) {
 }
 
 /*
- * call-seq:
- *     Map.[]=(key, value) => value
+ * ruby-doc: Map#[]=
  *
  * Inserts or overwrites the value at the given key with the given new value.
  * Throws an exception if the key type is incorrect. Returns the new value that
  * was just inserted.
+ *
+ * @param key [Object]
+ * @param value [Object]
+ * @return [Object]
  */
 static VALUE Map_index_set(VALUE _self, VALUE key, VALUE val) {
   Map* self = ruby_to_Map(_self);
   upb_Arena* arena = Arena_get(self->arena);
+  // The key must be copied into the arena, not aliased. Converting the value
+  // below can allocate a Ruby object and therefore trigger GC, which may free
+  // or move the String the key would otherwise point into. Passing NULL here is
+  // only safe when the key is consumed before any allocation, as in the lookup
+  // paths (Map_index, Map_has_key, Map_delete).
   upb_MessageValue key_upb =
-      Convert_RubyToUpb(key, "", Map_keyinfo(self), NULL);
+      Convert_RubyToUpb(key, "", Map_keyinfo(self), arena);
   upb_MessageValue val_upb =
       Convert_RubyToUpb(val, "", self->value_type_info, arena);
 
-  upb_Map_Set(Map_GetMutable(_self), key_upb, val_upb, arena);
+  if (!upb_Map_Set(Map_GetMutable(_self), key_upb, val_upb, arena)) {
+    Arena_raise_oom();
+  }
 
   return val;
 }
 
 /*
- * call-seq:
- *     Map.has_key?(key) => bool
+ * ruby-doc: Map#has_key?
  *
  * Returns true if the given key is present in the map. Throws an exception if
  * the key has the wrong type.
+ *
+ * @param key [Object]
+ * @return [Boolean]
  */
 static VALUE Map_has_key(VALUE _self, VALUE key) {
   Map* self = ruby_to_Map(_self);
@@ -433,11 +473,13 @@ static VALUE Map_has_key(VALUE _self, VALUE key) {
 }
 
 /*
- * call-seq:
- *     Map.delete(key) => old_value
+ * ruby-doc: Map#delete
  *
  * Deletes the value at the given key, if any, returning either the old value or
  * nil if none was present. Throws an exception if the key is of the wrong type.
+ *
+ * @param key [Object]
+ * @return [Object]
  */
 static VALUE Map_delete(VALUE _self, VALUE key) {
   upb_Map* map = Map_GetMutable(_self);
@@ -455,10 +497,11 @@ static VALUE Map_delete(VALUE _self, VALUE key) {
 }
 
 /*
- * call-seq:
- *     Map.clear
+ * ruby-doc: Map#clear
  *
  * Removes all entries from the map.
+ *
+ * @return [nil]
  */
 static VALUE Map_clear(VALUE _self) {
   upb_Map_Clear(Map_GetMutable(_self));
@@ -466,10 +509,11 @@ static VALUE Map_clear(VALUE _self) {
 }
 
 /*
- * call-seq:
- *     Map.length
+ * ruby-doc: Map#length
  *
  * Returns the number of entries (key-value pairs) in the map.
+ *
+ * @return [Integer]
  */
 static VALUE Map_length(VALUE _self) {
   Map* self = ruby_to_Map(_self);
@@ -477,11 +521,12 @@ static VALUE Map_length(VALUE _self) {
 }
 
 /*
- * call-seq:
- *     Map.dup => new_map
+ * ruby-doc: Map#dup
  *
  * Duplicates this map with a shallow copy. References to all non-primitive
  * element objects (e.g., submessages) are shared.
+ *
+ * @return [Map]
  */
 static VALUE Map_dup(VALUE _self) {
   Map* self = ruby_to_Map(_self);
@@ -495,15 +540,16 @@ static VALUE Map_dup(VALUE _self) {
 
   upb_MessageValue key, val;
   while (upb_Map_Next(self->map, &key, &val, &iter)) {
-    upb_Map_Set(new_map, key, val, arena);
+    if (!upb_Map_Set(new_map, key, val, arena)) {
+      Arena_raise_oom();
+    }
   }
 
   return new_map_rb;
 }
 
 /*
- * call-seq:
- *     Map.==(other) => boolean
+ * ruby-doc: Map#==
  *
  * Compares this map to another. Maps are equal if they have identical key sets,
  * and for each key, the values in both maps compare equal. Elements are
@@ -513,6 +559,9 @@ static VALUE Map_dup(VALUE _self) {
  * Maps with dissimilar key types or value types/typeclasses are never equal,
  * even if value comparison (for example, between integers and floats) would
  * have otherwise indicated that every element has equal value.
+ *
+ * @param other [Map]
+ * @return [Boolean]
  */
 VALUE Map_eq(VALUE _self, VALUE _other) {
   Map* self = ruby_to_Map(_self);
@@ -560,12 +609,13 @@ VALUE Map_eq(VALUE _self, VALUE _other) {
 }
 
 /*
- * call-seq:
- *     Map.frozen? => bool
+ * ruby-doc: Map#frozen?
  *
  * Returns true if the map is frozen in either Ruby or the underlying
  * representation. Freezes the Ruby map object if it is not already frozen in
  * Ruby but it is frozen in the underlying representation.
+ *
+ * @return [Boolean]
  */
 VALUE Map_frozen(VALUE _self) {
   Map* self = ruby_to_Map(_self);
@@ -580,11 +630,12 @@ VALUE Map_frozen(VALUE _self) {
 }
 
 /*
- * call-seq:
- *     Map.freeze => self
+ * ruby-doc: Map#freeze
  *
  * Freezes the map object. We have to intercept this so we can freeze the
  * underlying representation, not just the Ruby wrapper.
+ *
+ * @return [self]
  */
 VALUE Map_freeze(VALUE _self) {
   Map* self = ruby_to_Map(_self);
@@ -623,6 +674,7 @@ VALUE Map_EmptyFrozen(const upb_FieldDef* f) {
     self->arena = Arena_new();
     self->map =
         upb_Map_New(Arena_get(self->arena), key_type, value_type_info.type);
+    if (!self->map) Arena_raise_oom();
     self->key_type = key_type;
     self->value_type_info = value_type_info;
     if (self->value_type_info.type == kUpb_CType_Message) {
@@ -637,10 +689,11 @@ VALUE Map_EmptyFrozen(const upb_FieldDef* f) {
 }
 
 /*
- * call-seq:
- *     Map.hash => hash_value
+ * ruby-doc: Map#hash
  *
  * Returns a hash value based on this map's contents.
+ *
+ * @return [Integer]
  */
 VALUE Map_hash(VALUE _self) {
   Map* self = ruby_to_Map(_self);
@@ -658,10 +711,11 @@ VALUE Map_hash(VALUE _self) {
 }
 
 /*
- * call-seq:
- *     Map.to_h => {}
+ * ruby-doc: Map#to_h
  *
  * Returns a Ruby Hash object containing all the values within the map
+ *
+ * @return [Hash]
  */
 VALUE Map_to_h(VALUE _self) {
   Map* self = ruby_to_Map(_self);
@@ -669,12 +723,13 @@ VALUE Map_to_h(VALUE _self) {
 }
 
 /*
- * call-seq:
- *     Map.inspect => string
+ * ruby-doc: Map#inspect
  *
  * Returns a string representing this map's elements. It will be formatted as
  * "{key => value, key => value, ...}", with each key and value string
  * representation computed by its own #inspect method.
+ *
+ * @return [String]
  */
 VALUE Map_inspect(VALUE _self) {
   Map* self = ruby_to_Map(_self);
@@ -687,13 +742,15 @@ VALUE Map_inspect(VALUE _self) {
 }
 
 /*
- * call-seq:
- *     Map.merge(other_map) => map
+ * ruby-doc: Map#merge
  *
  * Copies key/value pairs from other_map into a copy of this map. If a key is
  * set in other_map and this map, the value from other_map overwrites the value
  * in the new copy of this map. Returns the new copy of this map with merged
  * contents.
+ *
+ * @param other_map [Map]
+ * @return [Map]
  */
 static VALUE Map_merge(VALUE _self, VALUE hashmap) {
   VALUE dupped = Map_dup(_self);

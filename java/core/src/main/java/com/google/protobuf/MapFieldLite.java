@@ -19,8 +19,12 @@ import java.util.Set;
 /**
  * Internal representation of map fields in generated lite-runtime messages.
  *
+ * <p>This class is for Lite runtime use only. For details on what this means regarding performance
+ * and security characteristics, see {@link ForLiteOnly}.
+ *
  * <p>This class is a protobuf implementation detail. Users shouldn't use this class directly.
  */
+@ForLiteOnly
 public final class MapFieldLite<K, V> extends LinkedHashMap<K, V> {
 
   private boolean isMutable;
@@ -65,6 +69,7 @@ public final class MapFieldLite<K, V> extends LinkedHashMap<K, V> {
   }
 
   @Override
+  @CanIgnoreReturnValue
   public V put(K key, V value) {
     ensureMutable();
     checkNotNull(key);
@@ -73,6 +78,7 @@ public final class MapFieldLite<K, V> extends LinkedHashMap<K, V> {
     return super.put(key, value);
   }
 
+  @CanIgnoreReturnValue
   public V put(Map.Entry<K, V> entry) {
     return put(entry.getKey(), entry.getValue());
   }
@@ -85,6 +91,7 @@ public final class MapFieldLite<K, V> extends LinkedHashMap<K, V> {
   }
 
   @Override
+  @CanIgnoreReturnValue
   public V remove(Object key) {
     ensureMutable();
     return super.remove(key);

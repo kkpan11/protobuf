@@ -13,6 +13,7 @@
 #include <cstring>
 #include <ctime>
 #include <functional>
+#include <memory>
 #include <string>
 #include <tuple>
 #include <utility>
@@ -26,6 +27,7 @@
 #include "google/protobuf/arena.h"
 #include "google/protobuf/arena_align.h"
 #include "google/protobuf/arenastring.h"
+#include "google/protobuf/message_lite.h"
 #include "google/protobuf/port.h"
 
 
@@ -124,7 +126,7 @@ class MicroStringPrevTest
       // The actual must be at least what we expect.
       EXPECT_GE(actual, expected_string_used);
       // But it can be larger and we don't know how much. Round up a bit.
-      EXPECT_LE(actual, 1.1 * expected_string_used + 32);
+      EXPECT_LE(actual, 1.2 * expected_string_used + 32);
     }
   }
 
@@ -886,9 +888,8 @@ TEST(MicroStringTest, SetInChunksWontPreallocateForVeryLargeFakeSize) {
 }
 
 TEST(MicroStringTest, SetInChunksAllowsVeryLargeValues) {
-  if (sizeof(void*) < 8) {
-    GTEST_SKIP() << "Might not be possible to allocate that much memory on "
-                    "this platform.";
+  if (!internal::RunLargeMemoryTests()) {
+    GTEST_SKIP() << "Not enough memory for this test.";
   }
 
   std::string total(1'000'000'000, 0);
@@ -1176,6 +1177,7 @@ TEST(MicroStringTest, MemoryUsageComparison) {
   }
   print_range(input.size());
 }
+
 
 
 }  // namespace

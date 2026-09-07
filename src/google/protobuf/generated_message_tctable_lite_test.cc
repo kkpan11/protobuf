@@ -8,24 +8,31 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <optional>
+#include <memory>
 
+#include "google/protobuf/descriptor.pb.h"
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include "absl/algorithm/container.h"
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
 #include "absl/strings/str_cat.h"
+#include "absl/strings/str_replace.h"
 #include "absl/strings/string_view.h"
+#include "absl/types/optional.h"
 #include "google/protobuf/descriptor.h"
 #include "google/protobuf/descriptor_database.h"
 #include "google/protobuf/descriptor_visitor.h"
+#include "google/protobuf/dynamic_message.h"
 #include "google/protobuf/generated_message_tctable_decl.h"
+#include "google/protobuf/generated_message_tctable_gen.h"
 #include "google/protobuf/generated_message_tctable_impl.h"
 #include "google/protobuf/io/coded_stream.h"
+#include "google/protobuf/io/zero_copy_stream_impl_lite.h"
 #include "google/protobuf/message_lite.h"
 #include "google/protobuf/parse_context.h"
 #include "google/protobuf/port.h"
+#include "google/protobuf/test_protos/tctable_long_name_test.pb.h"
 #include "google/protobuf/unittest.pb.h"
 #include "google/protobuf/wire_format_lite.h"
 
@@ -54,9 +61,9 @@ TcFieldData Xor2SerializedBytes(TcFieldData tfd, const char* ptr) {
   return tfd;
 }
 
-std::optional<const char*> fallback_ptr_received;
-std::optional<uint64_t> fallback_hasbits_received;
-std::optional<uint64_t> fallback_tag_received;
+absl::optional<const char*> fallback_ptr_received;
+absl::optional<uint64_t> fallback_hasbits_received;
+absl::optional<uint64_t> fallback_tag_received;
 PROTOBUF_CC const char* FastParserGaveUp(
     ::google::protobuf::MessageLite*, const char* ptr, ::google::protobuf::internal::ParseContext*,
     ::google::protobuf::internal::TcFieldData data,
@@ -88,24 +95,25 @@ TEST(FastVarints, NameHere) {
   constexpr uint8_t kHasBitIndex = 0;
   constexpr uint8_t kFieldOffset = 24;
 
-  // clang-format on
+  const ClassData class_data(nullptr, nullptr, MessageCreator(), nullptr,
+                             nullptr, nullptr, nullptr,
+                             /*cached_size_offset=*/16, "type_name");
+
   const TcParseTable<0, 1, 0, 0, 2> parse_table = {
       {
           kHasBitsOffset,  //
           0,               // no _extensions_
-          1, 0,            // max_field_number, fast_idx_mask
+          1,
+          0,  // max_field_number, fast_idx_mask
           offsetof(decltype(parse_table), field_lookup_table),
           0xFFFFFFFF - 1,  // skipmap
           offsetof(decltype(parse_table), field_entries),
           1,                                             // num_field_entries
           0,                                             // num_aux_entries
           offsetof(decltype(parse_table), field_names),  // no aux_entries
-          nullptr,                                       // default instance
-          nullptr,                                       // post_loop_handler
-          FastParserGaveUp,                              // fallback
-#ifdef PROTOBUF_PREFETCH_PARSE_TABLE
-          nullptr,  // to_prefetch
-#endif              // PROTOBUF_PREFETCH_PARSE_TABLE
+          &class_data,
+          nullptr,           // post_loop_handler
+          FastParserGaveUp,  // fallback
       },
       // Fast Table:
       {{
@@ -124,7 +132,6 @@ TEST(FastVarints, NameHere) {
       // no aux_entries
       {{}},
   };
-  // clang-format on
   uint8_t serialize_buffer[64];
 
   for (int size : {8, 32, 64}) {
@@ -201,9 +208,9 @@ TEST(FastVarints, NameHere) {
             fn = &TcParser::FastV64S1;
             break;
         }
-        fallback_ptr_received = std::nullopt;
-        fallback_hasbits_received = std::nullopt;
-        fallback_tag_received = std::nullopt;
+        fallback_ptr_received = absl::nullopt;
+        fallback_hasbits_received = absl::nullopt;
+        fallback_tag_received = absl::nullopt;
         end_ptr = fn(reinterpret_cast<MessageLite*>(fake_msg), ptr, &ctx,
                      Xor2SerializedBytes(parse_table.fast_entries[0].bits, ptr),
                      &parse_table.header, /*hasbits=*/0);
@@ -298,9 +305,6 @@ TEST(IsEntryForFieldNumTest, Matcher) {
           nullptr,     // default instance
           nullptr,     // post_loop_handler
           nullptr,     // fallback function
-#ifdef PROTOBUF_PREFETCH_PARSE_TABLE
-          nullptr,     // to_prefetch
-#endif  // PROTOBUF_PREFETCH_PARSE_TABLE
       }};
   // clang-format on
   int table_field_numbers[] = {1, 2, 3};
@@ -361,7 +365,7 @@ TEST_F(FindFieldEntryTest, FieldNumberWorksForAllFields) {
   // calculation works for all the fields.
   auto* gen_db = DescriptorPool::internal_generated_database();
   std::vector<std::string> all_file_names;
-  gen_db->FindAllFileNames(&all_file_names);
+  ASSERT_TRUE(gen_db->FindAllFileNames(&all_file_names));
 
   for (const auto& filename : all_file_names) {
     SCOPED_TRACE(filename);
@@ -371,7 +375,8 @@ TEST_F(FindFieldEntryTest, FieldNumberWorksForAllFields) {
       SCOPED_TRACE(desc.full_name());
       const auto* prototype =
           MessageFactory::generated_factory()->GetPrototype(&desc);
-      const auto* tc_table = internal::GetClassData(*prototype)->tc_table;
+      const auto* tc_table =
+          internal::GetClassData(*prototype)->GetTcParseTable();
 
       std::vector<int> sorted_field_numbers;
       for (auto* field : internal::FieldRange(&desc)) {
@@ -404,9 +409,6 @@ TEST_F(FindFieldEntryTest, SequentialFieldRange) {
           nullptr,     // default instance
           nullptr,     // post_loop_handler
           {},          // fallback function
-#ifdef PROTOBUF_PREFETCH_PARSE_TABLE
-          nullptr,     // to_prefetch
-#endif  // PROTOBUF_PREFETCH_PARSE_TABLE
       },
       {},  // fast_entries
       // field_lookup_table for 2, 3, 4, 5, 111:
@@ -448,9 +450,6 @@ TEST_F(FindFieldEntryTest, SmallScanRange) {
           nullptr,     // default instance
           nullptr,     // post_loop_handler
           {},          // fallback function
-#ifdef PROTOBUF_PREFETCH_PARSE_TABLE
-          nullptr,     // to_prefetch
-#endif  // PROTOBUF_PREFETCH_PARSE_TABLE
       },
       {},  // fast_entries
       // field_lookup_table for 1, 3, 4, 5, 7, 111:
@@ -500,9 +499,6 @@ TEST_F(FindFieldEntryTest, BinarySearchRange) {
           nullptr,     // default instance
           nullptr,     // post_loop_handler
           {},          // fallback function
-#ifdef PROTOBUF_PREFETCH_PARSE_TABLE
-          nullptr,     // to_prefetch
-#endif  // PROTOBUF_PREFETCH_PARSE_TABLE
       },
       {},  // fast_entries
       // field_lookup_table for 1, 3, 4, 5, 6, 8, 9, 11, 12, 70
@@ -549,9 +545,6 @@ TEST_F(FindFieldEntryTest, OutOfRange) {
           nullptr,     // default instance
           nullptr,     // post_loop_handler
           {},          // fallback function
-#ifdef PROTOBUF_PREFETCH_PARSE_TABLE
-          nullptr,     // to_prefetch
-#endif  // PROTOBUF_PREFETCH_PARSE_TABLE
       },
       {},  // fast_entries
       {{// field lookup table
@@ -603,9 +596,6 @@ TEST_F(FindFieldEntryTest, EmptyMessage) {
           nullptr,     // default instance
           nullptr,     // post_loop_handler
           nullptr,     // fallback function
-#ifdef PROTOBUF_PREFETCH_PARSE_TABLE
-          nullptr,     // to_prefetch
-#endif  // PROTOBUF_PREFETCH_PARSE_TABLE
       },
       {},  // fast_entries
       {{// empty field lookup table
@@ -657,9 +647,6 @@ const TcParseTable<5, 134, 5, 2176, 55> test_all_types_table = {
         nullptr,     // default instance
         nullptr,     // post_loop_handler
         nullptr,     // fallback function
-#ifdef PROTOBUF_PREFETCH_PARSE_TABLE
-        nullptr,     // to_prefetch
-#endif  // PROTOBUF_PREFETCH_PARSE_TABLE
     },
     {{
         // tail-call table
@@ -897,7 +884,7 @@ TEST(GeneratedMessageTctableLiteTest, PackedEnumSmallRange) {
   }
 
   proto2_unittest::TestPackedEnumSmallRange new_proto;
-  new_proto.ParseFromString(proto.SerializeAsString());
+  ABSL_CHECK(new_proto.ParseFromString(proto.SerializeAsString()));
 
   // We should have reserved exactly the right size for new_proto's `vals`,
   // rather than growing it on demand like we did in `proto`.
@@ -981,10 +968,108 @@ TEST(GeneratedMessageTctableLiteTest,
   // field 1, because it notices that the input serialized proto is much smaller
   // than 2^20 bytes.
   proto2_unittest::TestPackedEnumSmallRange proto;
-  proto.MergeFromString(serialized);
+  // TODO: Remove this suppression.
+  (void)proto.MergeFromString(serialized);
   EXPECT_LE(proto.vals().Capacity(), 2048);
 }
 
+
+TEST(GeneratedTcTableLiteTest, MessageNameCharOverflowIfSigned) {
+  using ReproProto = proto2_unittest::
+      MessageNameOfSize112_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA;  // NOLINT
+  ASSERT_EQ(ReproProto::descriptor()->full_name().size(), 128);
+
+  ReproProto message;
+  std::string serialized = "\x0A\x03\xFF\xFF\xFF";
+  EXPECT_FALSE(message.ParseFromString(serialized));
+}
+
+TEST(GeneratedTcTableLiteTest, FieldNameLongNameSignExtensionBugRealProto) {
+  using ReproProto = proto2_unittest::MessageWithLongFieldName;
+  ASSERT_EQ(ReproProto::descriptor()->FindFieldByNumber(1)->name().size(), 128);
+  ReproProto message;
+  std::string serialized = "\x0A\x03\xFF\xFF\xFF";
+  EXPECT_FALSE(message.ParseFromString(serialized));
+}
+
+
+TEST(TcParserTest, OobGenReproduction) {
+  constexpr int kStartFieldNumber = 33;
+  constexpr int kFieldSpacing = TailCallTableInfo::kMaxSkipEntrySpacing;
+
+  constexpr int kTargetSkipEntryNum = 0xFFFF;
+  constexpr int kTargetDistance = kTargetSkipEntryNum * /* bits-per-entry */ 16;
+  constexpr int kLastStepSpacing = kTargetDistance % kFieldSpacing;
+
+  // Each field spaced kFieldSpacing apart adds (kFieldSpacing / 16) entries
+  // to the skip table block.
+  constexpr int kEntriesPerField = kFieldSpacing / 16;
+
+  // We want to overflow the uint16_t entry count (65535).
+  // The first field adds 1 entry, and each subsequent field adds
+  // kEntriesPerField. We want total_entries >= 65536 to overflow. 1 +
+  // kEntriesPerField * (kNumFields - 1) >= 65536 kNumFields - 1 >= (65536 - 1)
+  // / kEntriesPerField (round up)
+  constexpr int kTargetEntries = 65536;
+  constexpr int kNumFields =
+      (kTargetEntries - 1 + kEntriesPerField - 1) / kEntriesPerField + 1;
+
+  // The count wraps to:
+  constexpr int kTotalEntries = 1 + kEntriesPerField * (kNumFields - 1);
+  constexpr int kWrappedCount = kTotalEntries % 65536;
+  static_assert(kWrappedCount == 3,
+                "Wrapped count must be 3 to trigger the bug");
+
+  // entries[kWrappedCount] (entries[3]) is a filler entry for the first field.
+  // Filler entries have skipmap = 0xFFFF and field_entry_offset = 1.
+  // Reinterpreted fstart = skipmap | (field_entry_offset << 16) =
+  // 0xFFFF | (1 << 16) = 131071. We need target field number > fstart to
+  // trigger OOB.
+  constexpr int kReinterpretedFstart = 0xFFFF | (1 << 16);
+  constexpr int kTargetFieldNumber = kReinterpretedFstart + 1;  // 131072
+
+  FileDescriptorProto file_proto;
+  file_proto.set_name("poc.proto");
+  file_proto.set_syntax("editions");
+  file_proto.set_edition(Edition::EDITION_2023);
+
+  DescriptorProto* message_proto = file_proto.add_message_type();
+  message_proto->set_name("M");
+
+  int fnum = kStartFieldNumber;
+  for (int i = 0; i < kNumFields; ++i) {
+    FieldDescriptorProto* field = message_proto->add_field();
+    field->set_name(absl::StrCat("f_", i));
+    field->set_number(fnum);
+    field->set_label(FieldDescriptorProto::LABEL_OPTIONAL);
+    field->set_type(FieldDescriptorProto::TYPE_INT32);
+
+    // We need to adjust one of them to ensure exact 0xFFFF overflow.
+    fnum += i == kNumFields - 2 ? kLastStepSpacing : kFieldSpacing;
+  }
+
+  DescriptorPool pool;
+  pool.EnforceProtoLimits(false);
+  const FileDescriptor* file_desc = pool.BuildFile(file_proto);
+  ASSERT_NE(file_desc, nullptr);
+
+  const Descriptor* desc = file_desc->FindMessageTypeByName("M");
+  ASSERT_NE(desc, nullptr);
+
+  DynamicMessageFactory factory(&pool);
+  std::unique_ptr<Message> msg(factory.GetPrototype(desc)->New());
+
+  std::string payload;
+  {
+    io::StringOutputStream output(&payload);
+    io::CodedOutputStream coded_output(&output);
+    coded_output.WriteVarint32(WireFormatLite::MakeTag(
+        kTargetFieldNumber, WireFormatLite::WIRETYPE_VARINT));
+    coded_output.WriteVarint32(1);  // value
+  }
+
+  (void)msg->ParseFromString(payload);
+}
 
 }  // namespace internal
 }  // namespace protobuf

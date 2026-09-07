@@ -10,18 +10,18 @@
 
 #include <string>
 
-#include "absl/strings/str_replace.h"
 #include "absl/strings/string_view.h"
 #include "google/protobuf/descriptor.h"
 #include "google/protobuf/descriptor.pb.h"
+
+// Must be included last.
+#include "google/protobuf/port_def.inc"
 
 namespace google {
 namespace protobuf {
 namespace compiler {
 namespace python {
 
-std::string ModuleName(absl::string_view filename);
-std::string StrippedModuleName(absl::string_view filename);
 bool ContainsPythonKeyword(absl::string_view module_name);
 bool IsPythonKeyword(absl::string_view name);
 std::string ResolveKeyword(absl::string_view name);
@@ -29,6 +29,7 @@ std::string GetFileName(const FileDescriptor* file_des,
                         absl::string_view suffix);
 bool HasGenericServices(const FileDescriptor* file);
 std::string GeneratedCodeToBase64(const GeneratedCodeInfo& annotations);
+std::string PrintImport(const FileDescriptor* file, bool* has_importlib);
 
 template <typename DescriptorT>
 std::string NamePrefixedWithNestedTypes(const DescriptorT& descriptor,
@@ -38,5 +39,7 @@ std::string NamePrefixedWithNestedTypes(const DescriptorT& descriptor,
 }  // namespace compiler
 }  // namespace protobuf
 }  // namespace google
+
+#include "google/protobuf/port_undef.inc"
 
 #endif  // GOOGLE_PROTOBUF_COMPILER_PYTHON_HELPERS_H__

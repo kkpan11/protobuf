@@ -15,7 +15,6 @@
 #include "absl/strings/str_replace.h"
 #include "absl/strings/string_view.h"
 #include "absl/strings/substitute.h"
-#include "absl/types/source_location.h"
 #include "absl/types/span.h"
 #include "google/protobuf/descriptor.h"
 #include "google/protobuf/io/printer.h"
@@ -23,13 +22,19 @@
 #include "upb/reflection/def.hpp"
 #include "upb_generator/common/cpp_to_upb_def.h"
 
-namespace google::protobuf::hpb_generator {
+// Must be last.
+#include "upb/port/def.inc"
+
+namespace google {
+namespace protobuf {
+namespace hpb_generator {
 
 enum class Backend { UPB, CPP };
 
 struct Options {
   Backend backend = Backend::UPB;
   bool strip_feature_includes = false;
+  io::AnnotationCollector* annotation_collector = nullptr;
 };
 
 /**
@@ -48,34 +53,37 @@ class Context final {
  public:
   Context(const FileDescriptor* file, io::ZeroCopyOutputStream* stream,
           const Options& options)
-      : stream_(stream), printer_(stream_), options_(options) {
+      : stream_(stream),
+        printer_(stream_,
+                 io::Printer::Options('$', options.annotation_collector)),
+        options_(options) {
     BuildDefPool(file);
   }
 
   void Emit(absl::Span<const io::Printer::Sub> vars, absl::string_view format,
-            absl::SourceLocation loc = absl::SourceLocation::current()) {
+            google::protobuf::io::Printer::SourceLocation loc =
+                google::protobuf::io::Printer::SourceLocation::current()) {
     printer_.Emit(vars, format, loc);
   }
 
   void Emit(absl::string_view format,
-            absl::SourceLocation loc = absl::SourceLocation::current()) {
+            google::protobuf::io::Printer::SourceLocation loc =
+                google::protobuf::io::Printer::SourceLocation::current()) {
     printer_.Emit(format, loc);
-  }
-
-  // TODO: b/373438292 - Remove EmitLegacy in favor of Emit.
-  // This is an interim solution while we migrate from Output to io::Printer
-  template <class... Arg>
-  void EmitLegacy(absl::string_view format, const Arg&... arg) {
-    auto res = absl::Substitute(format, arg...);
-    printer_.Emit(res, absl::SourceLocation::current());
   }
 
   const Options& options() { return options_; }
   io::Printer& printer() { return printer_; }
 
-  inline std::string GetLayoutIndex(const FieldDescriptor* field) {
+  std::string GetLayoutIndex(const FieldDescriptor* field) {
     return absl::StrCat(
         upb::generator::FindBaseFieldDef(pool_, field).layout_index());
+  }
+
+  int GetLayoutSize(const Descriptor* descriptor) {
+    return upb::generator::FindMessageDef(pool_, descriptor)
+        .mini_table()
+        ->UPB_PRIVATE(size);
   }
 
   Context(const Context&) = delete;
@@ -84,7 +92,7 @@ class Context final {
   Context& operator=(Context&&) = delete;
 
  private:
-  inline void BuildDefPool(const FileDescriptor* file) {
+  void BuildDefPool(const FileDescriptor* file) {
     upb::generator::AddFile(file, &pool_);
   }
 
@@ -119,7 +127,7 @@ inline void EmitFileWarning(const google::protobuf::FileDescriptor* file, Contex
            )cc");
 }
 
-// TODO: b/346865271 append ::hpb instead of ::protos after namespace swap
+// TODO: b/457468323 append ::hpb instead of ::protos after namespace swap
 inline std::string NamespaceFromPackageName(absl::string_view package_name) {
   return absl::StrCat(absl::StrReplaceAll(package_name, {{".", "::"}}),
                       "::protos");
@@ -144,7 +152,10 @@ void WrapNamespace(const google::protobuf::FileDescriptor* file, Context& ctx, T
         )cc");
   }
 }
+}  // namespace hpb_generator
 }  // namespace protobuf
-}  // namespace google::hpb_generator
+}  // namespace google
+
+#include "upb/port/undef.inc"
 
 #endif  // GOOGLE_PROTOBUF_COMPILER_HPB_CONTEXT_H__

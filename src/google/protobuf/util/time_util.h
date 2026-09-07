@@ -10,6 +10,7 @@
 #ifndef GOOGLE_PROTOBUF_UTIL_TIME_UTIL_H__
 #define GOOGLE_PROTOBUF_UTIL_TIME_UTIL_H__
 
+
 #include <cstdint>
 #include <ctime>
 #include <ostream>
@@ -17,6 +18,7 @@
 
 #include "google/protobuf/duration.pb.h"
 #include "google/protobuf/timestamp.pb.h"
+#include "absl/strings/string_view.h"
 
 // Must be included last.
 #include "google/protobuf/port_def.inc"

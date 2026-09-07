@@ -16,6 +16,7 @@
 #include "absl/strings/string_view.h"
 #include "absl/strings/substitute.h"
 #include "google/protobuf/compiler/parser.h"
+#include "google/protobuf/descriptor.h"
 #include "google/protobuf/dynamic_message.h"
 #include "google/protobuf/io/tokenizer.h"
 #include "google/protobuf/io/zero_copy_stream_impl_lite.h"
@@ -165,7 +166,7 @@ class SimpleErrorCollector : public io::ErrorCollector {
  public:
   SimpleErrorCollector() = default;
   void RecordError(int line, io::ColumnNumber column,
-                   absl::string_view message) override{};
+                   absl::string_view message) override {};
 };
 
 TEST(RetentionTest, StripSourceRetentionOptionsWithSourceCodeInfo) {
@@ -222,9 +223,21 @@ TEST(RetentionTest, StripSourceRetentionOptionsWithSourceCodeInfo) {
   pool.BuildFile(descriptor_proto_descriptor);
   pool.BuildFile(file_descriptor);
 
-  FileDescriptorProto stripped_file = compiler::StripSourceRetentionOptions(
-      *pool.FindFileByName("retention.proto"),
-      /*include_source_code_info=*/true);
+  const FileDescriptor* interpreted_desc =
+      pool.FindFileByName("retention.proto");
+  FileDescriptorProto interpreted_unstripped_file;
+  interpreted_desc->CopyTo(&interpreted_unstripped_file);
+  interpreted_desc->CopySourceCodeInfoTo(&interpreted_unstripped_file);
+
+  FileDescriptorProto stripped_file =
+      compiler::StripSourceRetentionOptions(*interpreted_desc,
+                                            /*include_source_code_info=*/true);
+
+// TODO: b/168903973 - Remove once we update the format.
+  EXPECT_EQ(interpreted_unstripped_file.source_code_info().location_size(), 64);
+
+  // Stripping removes source-retention options (including some sub-fields),
+  // reducing the location count.
   EXPECT_EQ(stripped_file.source_code_info().location_size(), 63);
 }
 
@@ -302,9 +315,6 @@ TEST(RetentionTest, InvalidDescriptor) {
   ASSERT_NE(pool.BuildFile(descriptor_proto_descriptor), nullptr);
   const FileDescriptor* file_descriptor = pool.BuildFile(file_descriptor_proto);
   ASSERT_NE(file_descriptor, nullptr);
-
-  FileDescriptorProto stripped_file =
-      compiler::StripSourceRetentionOptions(*file_descriptor);
 }
 
 TEST(RetentionTest, MissingRequiredField) {

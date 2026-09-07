@@ -15,6 +15,7 @@ import com.google.protobuf.MessageReflection.MergeTarget;
 import java.io.IOException;
 import java.math.BigInteger;
 import java.nio.CharBuffer;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -27,11 +28,16 @@ import java.util.logging.Logger;
 import java.util.regex.Pattern;
 
 /**
- * Provide text parsing and formatting support for proto2 instances. The implementation largely
- * follows text_format.cc.
+ * This class implements the Protobuf Text Format.
  *
- * @author wenboz@google.com Wenbo Zhu
- * @author kenton@google.com Kenton Varda
+ * <p>Printing and parsing protocol messages in text format is useful for debugging and human
+ * editing of messages.
+ *
+ * <p>Unlike the Binary and ProtoJSON formats, Text Format is not designed to be used as a wire
+ * format; instead it is intended for human-in-the-loop configuration use-cases.
+ *
+ * <p>Systems processing untrusted inputs should strongly prefer to use Binary format instead. If a
+ * textual format of untrusted inputs is required, consider using ProtoJSON format instead.
  */
 public final class TextFormat {
   private TextFormat() {}
@@ -42,7 +48,7 @@ public final class TextFormat {
   private static final String ENABLE_INSERT_SILENT_MARKER_ENV_NAME =
       "SILENT_MARKER_INSERTION_ENABLED";
   private static final boolean ENABLE_INSERT_SILENT_MARKER =
-      "true".equals(System.getenv(ENABLE_INSERT_SILENT_MARKER_ENV_NAME));
+    System.getenv().getOrDefault(ENABLE_INSERT_SILENT_MARKER_ENV_NAME, "false").equals("true");
 
   private static final String REDACTED_MARKER = "[REDACTED]";
 
@@ -665,7 +671,8 @@ public final class TextFormat {
     // field, b) via an enum field marked with debug_redact=true that is within the proto's
     // FieldOptions, either directly or indirectly via a message option.
     private boolean shouldRedact(final FieldDescriptor field, TextGenerator generator) {
-      return enablingSafeDebugFormat && field.isSensitive();
+      FieldDescriptor.RedactionState state = field.getRedactionState();
+      return enablingSafeDebugFormat && state.redact;
     }
 
     /** Like {@code print()}, but writes directly to a {@code String} and returns it. */
@@ -906,6 +913,77 @@ public final class TextFormat {
         generator.eol();
       }
     }
+  }
+
+  /**
+   * Outputs a textual representation of the Protocol Message supplied into the parameter output.
+   * (This representation is the new version of the classic "ProtocolPrinter" output from the
+   * original Protocol Buffer system)
+   *
+   * @deprecated Use {@code printer().print(MessageOrBuilder, Appendable)}
+   */
+  @Deprecated
+  @InlineMe(
+      replacement = "TextFormat.printer().print(message, output)",
+      imports = "com.google.protobuf.TextFormat")
+  public static void print(final MessageOrBuilder message, final Appendable output)
+      throws IOException {
+    printer().print(message, output);
+  }
+
+  /**
+   * Same as {@code print()}, except that non-ASCII characters are not escaped.
+   *
+   * @deprecated Use {@code printer().escapingNonAscii(false).print(MessageOrBuilder, Appendable)}
+   */
+  @Deprecated
+  public static void printUnicode(final MessageOrBuilder message, final Appendable output)
+      throws IOException {
+    printer()
+        .escapingNonAscii(false)
+        .print(message, output, Printer.FieldReporterLevel.PRINT_UNICODE);
+  }
+
+  /**
+   * Like {@code print()}, but writes directly to a {@code String} and returns it.
+   *
+   * @deprecated Use {@code message.toString()}
+   */
+  @Deprecated
+  public static String printToString(final MessageOrBuilder message) {
+    return printer().printToString(message, Printer.FieldReporterLevel.TEXTFORMAT_PRINT_TO_STRING);
+  }
+
+  /**
+   * Same as {@code printToString()}, except that non-ASCII characters in string type fields are not
+   * escaped in backslash+octals.
+   *
+   * @deprecated Use {@code printer().escapingNonAscii(false).printToString(MessageOrBuilder)}
+   */
+  @Deprecated
+  public static String printToUnicodeString(final MessageOrBuilder message) {
+    return printer()
+        .escapingNonAscii(false)
+        .printToString(message, Printer.FieldReporterLevel.PRINT_UNICODE);
+  }
+
+  /**
+   * Outputs a textual representation of the value of given field value.
+   *
+   * @deprecated Use {@code printer().printFieldValue(FieldDescriptor, Object, Appendable)}
+   * @param field the descriptor of the field
+   * @param value the value of the field
+   * @param output the output to which to append the formatted value
+   * @throws ClassCastException if the value is not appropriate for the given field descriptor
+   * @throws IOException if there is an exception writing to the output
+   */
+  @Deprecated
+  @InlineMe(
+      replacement = "TextFormat.printer().printFieldValue(field, value, output)",
+      imports = "com.google.protobuf.TextFormat")
+  public static void printFieldValue(
+      final FieldDescriptor field, final Object value, final Appendable output) throws IOException {
+    printer().printFieldValue(field, value, output);
   }
 
   /** Convert an unsigned 32-bit integer to a string. */
@@ -1738,9 +1816,7 @@ public final class TextFormat {
       throws ParseException {
     Message.Builder builder = Internal.getDefaultInstance(protoClass).newBuilderForType();
     merge(input, builder);
-    @SuppressWarnings("unchecked")
-    T output = (T) builder.build();
-    return output;
+    return protoClass.cast(builder.build());
   }
 
   /**
@@ -1780,14 +1856,12 @@ public final class TextFormat {
       throws ParseException {
     Message.Builder builder = Internal.getDefaultInstance(protoClass).newBuilderForType();
     merge(input, extensionRegistry, builder);
-    @SuppressWarnings("unchecked")
-    T output = (T) builder.build();
-    return output;
+    return protoClass.cast(builder.build());
   }
 
   /**
-   * Parser for text-format proto2 instances. This class is thread-safe. The implementation largely
-   * follows google/protobuf/text_format.cc.
+   * Parser for text-format instances. This class is thread-safe. The implementation largely follows
+   * google/protobuf/text_format.cc.
    *
    * <p>Use {@link TextFormat#getParser()} to obtain the default parser, or {@link Builder} to
    * control the parser behavior.
@@ -1874,6 +1948,7 @@ public final class TextFormat {
        *
        * @throws IllegalArgumentException if a registry is already set.
        */
+      @CanIgnoreReturnValue
       public Builder setTypeRegistry(TypeRegistry typeRegistry) {
         this.typeRegistry = typeRegistry;
         return this;
@@ -1887,6 +1962,7 @@ public final class TextFormat {
        * <p>Use of this parameter is discouraged which may hide some errors (e.g. spelling error on
        * field name).
        */
+      @CanIgnoreReturnValue
       public Builder setAllowUnknownFields(boolean allowUnknownFields) {
         this.allowUnknownFields = allowUnknownFields;
         return this;
@@ -2150,9 +2226,9 @@ public final class TextFormat {
         // .proto file, which actually matches their type names, not their field
         // names.
         if (field == null) {
-          // Explicitly specify US locale so that this code does not break when
+          // Explicitly specify the 'neutral' ROOT locale so that this code does not break when
           // executing in Turkey.
-          final String lowerName = name.toLowerCase(Locale.US);
+          final String lowerName = name.toLowerCase(Locale.ROOT);
           field = type.findFieldByName(lowerName);
           // If the case-insensitive match worked but the field is NOT a group,
           if (field != null && !field.isGroupLike()) {
@@ -2776,7 +2852,7 @@ public final class TextFormat {
                     throw new InvalidEscapeSequenceException(
                         "Invalid escape sequence: '\\u' refers to a surrogate");
                   }
-                  byte[] chUtf8 = Character.toString(ch).getBytes(Internal.UTF_8);
+                  byte[] chUtf8 = Character.toString(ch).getBytes(StandardCharsets.UTF_8);
                   System.arraycopy(chUtf8, 0, result, pos, chUtf8.length);
                   pos += chUtf8.length;
                   i += 3;
@@ -2821,7 +2897,7 @@ public final class TextFormat {
                 }
                 int[] codepoints = new int[1];
                 codepoints[0] = codepoint;
-                byte[] chUtf8 = new String(codepoints, 0, 1).getBytes(Internal.UTF_8);
+                byte[] chUtf8 = new String(codepoints, 0, 1).getBytes(StandardCharsets.UTF_8);
                 System.arraycopy(chUtf8, 0, result, pos, chUtf8.length);
                 pos += chUtf8.length;
                 i += 7;
@@ -2864,7 +2940,7 @@ public final class TextFormat {
    * it's weird.
    */
   static String escapeText(final String input) {
-    return escapeBytes(ByteString.copyFromUtf8(input));
+    return TextFormatEscaper.escapeText(input);
   }
 
   /** Escape double quotes and backslashes in a String for emittingUnicode output of a message. */

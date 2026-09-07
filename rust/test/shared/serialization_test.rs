@@ -5,6 +5,11 @@
 // license that can be found in the LICENSE file or at
 // https://developers.google.com/open-source/licenses/bsd
 
+#[cfg(not(bzl))]
+mod protos;
+#[cfg(not(bzl))]
+use protos::*;
+
 use googletest::prelude::*;
 use protobuf::prelude::*;
 use protobuf::View;
@@ -29,6 +34,29 @@ macro_rules! generate_parameterized_serialization_test {
 
                 let serialized = msg.as_mut().serialize().unwrap();
                 assert_that!(serialized.len(), eq(0));
+            }
+
+            #[gtest]
+            fn [< serialized_len_matches_serialize_ $name_ext >]() {
+                let mut msg = [< $type >]::new();
+                msg.set_optional_int64(42);
+                msg.set_optional_bool(true);
+                msg.set_optional_bytes(b"serialize deserialize test");
+
+                let serialized = msg.serialize().unwrap();
+                assert_that!(msg.serialized_len(), eq(serialized.len()));
+
+                let serialized = msg.as_view().serialize().unwrap();
+                assert_that!(msg.as_view().serialized_len(), eq(serialized.len()));
+
+                let serialized = msg.as_mut().serialize().unwrap();
+                assert_that!(msg.as_mut().serialized_len(), eq(serialized.len()));
+            }
+
+            #[gtest]
+            fn [< serialized_len_empty_message_ $name_ext >]() {
+                let msg = [< $type >]::new();
+                assert_that!(msg.serialized_len(), eq(0));
             }
 
             #[gtest]

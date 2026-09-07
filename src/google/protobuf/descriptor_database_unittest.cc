@@ -14,11 +14,16 @@
 #include "google/protobuf/descriptor_database.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <memory>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include "google/protobuf/descriptor.pb.h"
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
+#include "absl/log/absl_check.h"
 #include "google/protobuf/descriptor.h"
 #include "google/protobuf/test_textproto.h"
 #include "google/protobuf/text_format.h"
@@ -27,6 +32,8 @@
 namespace google {
 namespace protobuf {
 namespace {
+
+using testing::ElementsAre;
 
 static void AddToDatabase(SimpleDescriptorDatabase* database,
                           const char* file_text) {
@@ -94,7 +101,7 @@ class EncodedDescriptorDatabaseTestCase : public DescriptorDatabaseTestCase {
   DescriptorDatabase* GetDatabase() override { return &database_; }
   bool AddToDatabase(const FileDescriptorProto& file) override {
     std::string data;
-    file.SerializeToString(&data);
+    ABSL_CHECK(file.SerializeToString(&data));
     return database_.AddCopy(data.data(), data.size());
   }
 
@@ -488,6 +495,41 @@ TEST(EncodedDescriptorDatabaseExtraTest, FindNameOfFileContainingSymbol) {
   EXPECT_FALSE(db.FindNameOfFileContainingSymbol("baz.Baz", &filename));
 }
 
+TEST(EncodedDescriptorDatabaseExtraTest,
+     RejectedDuplicateDoesNotShadowOriginal) {
+  // 1. Create original "Good" file.
+  FileDescriptorProto file;
+  file.set_name("app.proto");
+  file.set_package("app");
+  file.add_message_type()->set_name("Good");
+  std::string data_good = file.SerializeAsString();
+
+  EncodedDescriptorDatabase db;
+  EXPECT_TRUE(db.Add(data_good.data(), data_good.size()));
+
+  // 2. Call FindFileByName to trigger EnsureFlat() and move it to flat.
+  FileDescriptorProto found_good;
+  EXPECT_TRUE(db.FindFileByName("app.proto", &found_good));
+  EXPECT_EQ(found_good.message_type(0).name(), "Good");
+
+  // 3. Create duplicate "Evil" file with same name.
+  file.mutable_message_type(0)->set_name("Evil");
+  std::string data_evil = file.SerializeAsString();
+
+  // Adding "Evil" should fail because "app.proto" already exists.
+  EXPECT_FALSE(db.Add(data_evil.data(), data_evil.size()));
+
+  // 4. FindFileByName again. It should still return "Good".
+  FileDescriptorProto found_final;
+  EXPECT_TRUE(db.FindFileByName("app.proto", &found_final));
+  EXPECT_EQ(found_final.message_type(0).name(), "Good");
+
+  std::vector<std::string> files;
+  ASSERT_TRUE(db.FindAllFileNames(&files));
+  // The file should exist only once.
+  EXPECT_THAT(files, ElementsAre("app.proto"));
+}
+
 TEST(SimpleDescriptorDatabaseExtraTest, FindAllFileNames) {
   FileDescriptorProto f;
   f.set_name("foo.proto");
@@ -499,8 +541,8 @@ TEST(SimpleDescriptorDatabaseExtraTest, FindAllFileNames) {
 
   // Test!
   std::vector<std::string> all_files;
-  db.FindAllFileNames(&all_files);
-  EXPECT_THAT(all_files, testing::ElementsAre("foo.proto"));
+  ASSERT_TRUE(db.FindAllFileNames(&all_files));
+  EXPECT_THAT(all_files, ElementsAre("foo.proto"));
 }
 
 TEST(SimpleDescriptorDatabaseExtraTest, FindAllPackageNames) {

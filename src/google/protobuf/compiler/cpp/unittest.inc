@@ -23,11 +23,13 @@
 // is written this way.
 
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <vector>
 
 #include "absl/base/attributes.h"
+#include "absl/log/absl_check.h"
 #include "absl/strings/cord.h"
 #include "google/protobuf/compiler/cpp/unittest.h"
 #include "absl/strings/string_view.h"
@@ -38,13 +40,13 @@
 #endif
 #include "google/protobuf/stubs/callback.h"
 #include "google/protobuf/stubs/common.h"
-#include "google/protobuf/compiler/cpp/helpers.h"
 #include "google/protobuf/descriptor.pb.h"
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include "absl/base/casts.h"
 #include "absl/strings/substitute.h"
 #include "google/protobuf/arena.h"
+#include "google/protobuf/compiler/cpp/helpers.h"
 #include "google/protobuf/compiler/cpp/test_bad_identifiers_editions.pb.h"
 #include "google/protobuf/compiler/cpp/test_bad_identifiers_proto2.pb.h"
 #include "google/protobuf/compiler/importer.h"
@@ -75,8 +77,8 @@ void DoNothing() {}
 
 class MockErrorCollector : public MultiFileErrorCollector {
  public:
-  MockErrorCollector() {}
-  ~MockErrorCollector() override {}
+  MockErrorCollector() = default;
+  ~MockErrorCollector() override = default;
 
   std::string text_;
 
@@ -556,8 +558,8 @@ TEST(GENERATED_MESSAGE_TEST_NAME, CopyConstructorWithArenas) {
   UNITTEST::TestAllTypes message2_stack(*message1);
   TestUtil::ExpectAllFieldsSet(message2_stack);
 
-  std::unique_ptr<UNITTEST::TestAllTypes> message2_heap(
-      new UNITTEST::TestAllTypes(*message1));
+  std::unique_ptr<UNITTEST::TestAllTypes> message2_heap =
+      std::make_unique<UNITTEST::TestAllTypes>(*message1);
   TestUtil::ExpectAllFieldsSet(*message2_heap);
 
   arena.Reset();
@@ -757,7 +759,7 @@ TEST(GENERATED_MESSAGE_TEST_NAME, ReallyLargeTagNumber) {
   // We'll try serializing just for fun.
   message1.set_a(1234);
   message1.set_bb(5678);
-  message1.SerializeToString(&data);
+  ABSL_CHECK(message1.SerializeToString(&data));
   EXPECT_TRUE(message2.ParseFromString(data));
   EXPECT_EQ(1234, message2.a());
   EXPECT_EQ(5678, message2.bb());
@@ -833,7 +835,7 @@ TEST(GENERATED_MESSAGE_TEST_NAME, TestEmbedOptimizedForSize) {
   message.mutable_optional_message()->set_i(1);
   message.add_repeated_message()->mutable_msg()->set_c(2);
   std::string data;
-  message.SerializeToString(&data);
+  ABSL_CHECK(message.SerializeToString(&data));
   ASSERT_TRUE(message2.ParseFromString(data));
   EXPECT_EQ(1, message2.optional_message().i());
   EXPECT_EQ(2, message2.repeated_message(0).msg().c());
@@ -875,9 +877,11 @@ TEST(GENERATED_MESSAGE_TEST_NAME, TestSpaceUsed) {
   message1->mutable_optional_nested_message();
   ASSERT_EQ(sizeof(UNITTEST::TestAllTypes::NestedMessage),
             message1->optional_nested_message().SpaceUsedLong());
-  EXPECT_EQ(previous_size +
-            sizeof(UNITTEST::TestAllTypes::NestedMessage),
-            message1->SpaceUsedLong());
+  if constexpr (internal::ForceEagerlyVerifiedLazyInProtoc()) {
+  } else {
+    EXPECT_EQ(previous_size + sizeof(UNITTEST::TestAllTypes::NestedMessage),
+              message1->SpaceUsedLong());
+  }
 }
 
 TEST(GENERATED_MESSAGE_TEST_NAME, TestOneofSpaceUsed) {
@@ -951,7 +955,7 @@ TEST(GENERATED_MESSAGE_TEST_NAME, ParseFromTruncated) {
   const std::string msg = p.SerializeAsString();
   int successful_count = 0;
   for (int i = 0; i <= msg.size(); i++) {
-    if (p.ParseFromArray(msg.c_str(), i)) {
+    if (p.ParseFromString(absl::string_view(msg.c_str(), i))) {
       ++successful_count;
     }
   }
@@ -1112,10 +1116,9 @@ class GENERATED_SERVICE_TEST_NAME : public testing::Test {
           method_(""),
           controller_(nullptr),
           request_(nullptr),
-          response_(nullptr),
-          done_(nullptr) {}
+          response_(nullptr) {}
 
-    ~MockTestService() override {}
+    ~MockTestService() override = default;
 
     void Reset() { called_ = false; }
 
@@ -1129,7 +1132,7 @@ class GENERATED_SERVICE_TEST_NAME : public testing::Test {
       controller_ = controller;
       request_ = request;
       response_ = response;
-      done_ = done;
+      done->Run();
     }
 
     void Bar(RpcController* controller, const UNITTEST::BarRequest* request,
@@ -1140,7 +1143,7 @@ class GENERATED_SERVICE_TEST_NAME : public testing::Test {
       controller_ = controller;
       request_ = request;
       response_ = response;
-      done_ = done;
+      done->Run();
     }
 
     // ---------------------------------------------------------------
@@ -1150,7 +1153,6 @@ class GENERATED_SERVICE_TEST_NAME : public testing::Test {
     RpcController* controller_;
     const Message* request_;
     Message* response_;
-    Closure* done_;
   };
 
   class MockRpcChannel : public RpcChannel {
@@ -1161,7 +1163,6 @@ class GENERATED_SERVICE_TEST_NAME : public testing::Test {
           controller_(nullptr),
           request_(nullptr),
           response_(nullptr),
-          done_(nullptr),
           destroyed_(nullptr) {}
 
     ~MockRpcChannel() override {
@@ -1181,7 +1182,7 @@ class GENERATED_SERVICE_TEST_NAME : public testing::Test {
       controller_ = controller;
       request_ = request;
       response_ = response;
-      done_ = done;
+      done->Run();
     }
 
     // ---------------------------------------------------------------
@@ -1191,7 +1192,6 @@ class GENERATED_SERVICE_TEST_NAME : public testing::Test {
     RpcController* controller_;
     const Message* request_;
     Message* response_;
-    Closure* done_;
     bool* destroyed_;
   };
 
@@ -1279,23 +1279,23 @@ TEST_F(GENERATED_SERVICE_TEST_NAME, OwnsChannel) {
 
 TEST_F(GENERATED_SERVICE_TEST_NAME, CallMethod) {
   // Test that CallMethod() works.
+  Closure* done = done_.get();
 
   // Call Foo() via CallMethod().
-  mock_service_.CallMethod(foo_, &mock_controller_,
-                           &foo_request_, &foo_response_, done_.get());
+  mock_service_.CallMethod(foo_, &mock_controller_, &foo_request_,
+                           &foo_response_, done);
 
   ASSERT_TRUE(mock_service_.called_);
 
   EXPECT_EQ("Foo"            , mock_service_.method_    );
   EXPECT_EQ(&mock_controller_, mock_service_.controller_);
   EXPECT_EQ(&foo_request_    , mock_service_.request_   );
-  EXPECT_EQ(&foo_response_   , mock_service_.response_  );
-  EXPECT_EQ(done_.get()      , mock_service_.done_      );
+  EXPECT_EQ(&foo_response_, mock_service_.response_);
 
   // Try again, but call Bar() instead.
   mock_service_.Reset();
-  mock_service_.CallMethod(bar_, &mock_controller_,
-                           &bar_request_, &bar_response_, done_.get());
+  mock_service_.CallMethod(bar_, &mock_controller_, &bar_request_,
+                           &bar_response_, done);
 
   ASSERT_TRUE(mock_service_.called_);
   EXPECT_EQ("Bar", mock_service_.method_);
@@ -1304,17 +1304,21 @@ TEST_F(GENERATED_SERVICE_TEST_NAME, CallMethod) {
 TEST_F(GENERATED_SERVICE_TEST_NAME, CallMethodTypeFailure) {
   // Verify death if we call Foo() with Bar's message types.
 
+  Closure* done = done_.get();
+
 #if GTEST_HAS_DEATH_TEST  // death tests do not work on Windows yet
   EXPECT_DEBUG_DEATH(
       mock_service_.CallMethod(foo_, &mock_controller_, &foo_request_,
-                               &bar_response_, done_.get()),
-      "DynamicCastMessage");
+                               &bar_response_, done),
+      "Cannot downcast proto2_unittest.*.BarResponse to "
+      "proto2_unittest.*.FooResponse");
 
   mock_service_.Reset();
   EXPECT_DEBUG_DEATH(
       mock_service_.CallMethod(foo_, &mock_controller_, &bar_request_,
-                               &foo_response_, done_.get()),
-      "DynamicCastMessage");
+                               &foo_response_, done),
+      "Cannot downcast proto2_unittest.*.BarRequest to "
+      "proto2_unittest.*.FooRequest");
 #endif  // GTEST_HAS_DEATH_TEST
 }
 
@@ -1343,8 +1347,7 @@ TEST_F(GENERATED_SERVICE_TEST_NAME, Stub) {
   EXPECT_EQ(foo_             , mock_channel_.method_    );
   EXPECT_EQ(&mock_controller_, mock_channel_.controller_);
   EXPECT_EQ(&foo_request_    , mock_channel_.request_   );
-  EXPECT_EQ(&foo_response_   , mock_channel_.response_  );
-  EXPECT_EQ(done_.get()      , mock_channel_.done_      );
+  EXPECT_EQ(&foo_response_, mock_channel_.response_);
 
   // Call Bar() via the stub.
   mock_channel_.Reset();
@@ -1361,7 +1364,7 @@ TEST_F(GENERATED_SERVICE_TEST_NAME, NotImplemented) {
   // A service which doesn't implement any methods.
   class UnimplementedService : public UNITTEST::TestService {
    public:
-    UnimplementedService() {}
+    UnimplementedService() = default;
   };
 
   UnimplementedService unimplemented_service;
@@ -2120,7 +2123,7 @@ TEST(HELPERS_TEST_NAME, TestSCCAnalysis) {
     MessageSCCAnalyzer scc_analyzer((Options()));
     const SCC* scc = scc_analyzer.GetSCC(msg.GetDescriptor());
     MessageAnalysis result = scc_analyzer.GetSCCAnalysis(scc);
-    EXPECT_EQ(result.is_recursive, false);
+    EXPECT_EQ(result.is_recursive, true);
     EXPECT_EQ(result.contains_required, true);
     EXPECT_EQ(result.contains_cord, false);
     EXPECT_EQ(result.contains_extension, false);
@@ -2130,6 +2133,29 @@ TEST(HELPERS_TEST_NAME, TestSCCAnalysis) {
 }  // namespace cpp_unittest
 }  // namespace cpp
 }  // namespace compiler
+}  // namespace protobuf
+}  // namespace google
+
+#ifndef PROTOBUF_TEST_NO_DESCRIPTORS
+// We use a separate namespace to test the ADL hooks.
+// Doing the calls from the protobuf namespace might hide lexical scope lookups.
+namespace other_ns {
+namespace {
+TEST(GENERATED_ENUM_TEST_NAME, GetEnumDescriptorViaADL) {
+  EXPECT_EQ(
+      UNITTEST::TestAllTypes::NestedEnum_descriptor(),
+      ProtobufInternalGetEnumDescriptor(UNITTEST::TestAllTypes::NestedEnum{}));
+  EXPECT_EQ(UNITTEST::ForeignEnum_descriptor(),
+            ProtobufInternalGetEnumDescriptor(UNITTEST::ForeignEnum{}));
+  EXPECT_EQ(
+      UNITTEST::TestEnumWithDupValue_descriptor(),
+      ProtobufInternalGetEnumDescriptor(UNITTEST::TestEnumWithDupValue{}));
+  EXPECT_EQ(UNITTEST::TestSparseEnum_descriptor(),
+            ProtobufInternalGetEnumDescriptor(UNITTEST::TestSparseEnum{}));
+}
+}  // namespace
+}  // namespace other_ns
+#endif  // PROTOBUF_TEST_NO_DESCRIPTORS
 
 namespace no_generic_services_test {
   // Verify that no class called "TestService" was defined in
@@ -2140,6 +2166,8 @@ namespace no_generic_services_test {
   };
 }
 
+namespace google {
+namespace protobuf {
 namespace compiler {
 namespace cpp {
 namespace cpp_unittest {
@@ -2189,7 +2217,6 @@ TEST(DESCRIPTOR_INIT_TEST_NAME, Initialized) {
 }
 
 }  // namespace cpp_unittest
-
 }  // namespace cpp
 }  // namespace compiler
 }  // namespace protobuf

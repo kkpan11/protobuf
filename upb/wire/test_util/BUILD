@@ -5,7 +5,8 @@
 # license that can be found in the LICENSE file or at
 # https://developers.google.com/open-source/licenses/bsd
 
-load("//upb/bazel:build_defs.bzl", "UPB_DEFAULT_CPPOPTS")
+load("@rules_cc//cc:defs.bzl", "cc_library")
+load("//upb/bazel:copts.bzl", "UPB_DEFAULT_CPPOPTS", "UPB_DEFAULT_FEATURES")
 
 package(default_applicable_licenses = ["//:license"])
 
@@ -15,18 +16,16 @@ cc_library(
     srcs = ["make_mini_table.cc"],
     hdrs = ["make_mini_table.h"],
     copts = UPB_DEFAULT_CPPOPTS,
-    visibility = [
-        "//upb:__pkg__",
-        "//upb:__subpackages__",
-    ],
+    features = UPB_DEFAULT_FEATURES,
+    visibility = ["//upb:__subpackages__"],
     deps = [
-        "//upb:base",
-        "//upb:mem",
-        "//upb:mini_descriptor",
-        "//upb:mini_table",
-        "//upb:port",
-        "//upb:wire_reader",
+        "//upb/base",
+        "//upb/mem",
+        "//upb/mini_descriptor",
         "//upb/mini_descriptor:internal",
+        "//upb/mini_table",
+        "//upb/port",
+        "//upb/wire:reader",
         "//upb/wire/decode_fast:combinations",
         "//upb/wire/decode_fast:data",
         "@abseil-cpp//absl/log",
@@ -38,13 +37,10 @@ cc_library(
     name = "field_types",
     testonly = True,
     hdrs = ["field_types.h"],
-    visibility = [
-        "//upb:__pkg__",
-        "//upb:__subpackages__",
-    ],
+    visibility = ["//upb:__subpackages__"],
     deps = [
         ":wire_message",
-        "//upb:base",
+        "//upb/base",
         "//upb/wire/decode_fast:combinations",
         "@abseil-cpp//absl/base",
         "@abseil-cpp//absl/strings:string_view",
@@ -57,13 +53,10 @@ cc_library(
     testonly = True,
     srcs = ["wire_message.cc"],
     hdrs = ["wire_message.h"],
-    visibility = [
-        "//upb:__pkg__",
-        "//upb:__subpackages__",
-    ],
+    visibility = ["//upb:__subpackages__"],
     deps = [
-        "//upb:wire_reader",
         "//upb/base:internal",
+        "//upb/wire:reader",
         "@abseil-cpp//absl/log:absl_check",
         "@abseil-cpp//absl/strings:string_view",
     ],

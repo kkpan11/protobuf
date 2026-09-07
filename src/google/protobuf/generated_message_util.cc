@@ -12,18 +12,24 @@
 #include "google/protobuf/generated_message_util.h"
 
 #include <atomic>
+#include <climits>
 #include <cstdint>
-#include <limits>
+#include <memory>
+#include <string>
+#include <type_traits>
 
+#include "absl/log/absl_check.h"
 #include "google/protobuf/arenastring.h"
+#include "google/protobuf/class_data.h"
 #include "google/protobuf/extension_set.h"
 #include "google/protobuf/io/coded_stream.h"
 #include "google/protobuf/io/zero_copy_stream_impl_lite.h"
 #include "google/protobuf/message_lite.h"
+#include "google/protobuf/message_traits.h"
 #include "google/protobuf/metadata_lite.h"
 #include "google/protobuf/port.h"
-#include "google/protobuf/repeated_field.h"
 #include "google/protobuf/wire_format_lite.h"
+
 
 // Must be included last
 #include "google/protobuf/port_def.inc"
@@ -49,7 +55,7 @@ PROTOBUF_ATTRIBUTE_NO_DESTROY PROTOBUF_CONSTINIT const EmptyCord empty_cord_;
 
 // We add a single dummy entry to guarantee the section is never empty.
 struct DummyWeakDefault {
-  const Message* m;
+  const MessageGlobalsBase* m;
   WeakDescriptorDefaultTail tail;
 };
 DummyWeakDefault dummy_weak_default __attribute__((section("pb_defaults"))) = {
@@ -75,7 +81,8 @@ static void InitWeakDefaults() {
   while (start != end) {
     auto* tail = reinterpret_cast<const WeakDescriptorDefaultTail*>(end) - 1;
     end -= tail->size;
-    const Message* instance = reinterpret_cast<const Message*>(end);
+    const MessageGlobalsBase* instance =
+        reinterpret_cast<const MessageGlobalsBase*>(end);
     *tail->target = instance;
   }
 }
@@ -380,13 +387,14 @@ MessageLite* DuplicateIfNonNullInternal(MessageLite* message) {
   }
 }
 
-void GenericSwap(MessageLite* m1, MessageLite* m2) {
-  std::unique_ptr<MessageLite> tmp(m1->New());
-  tmp->CheckTypeAndMergeFrom(*m1);
-  m1->Clear();
-  m1->CheckTypeAndMergeFrom(*m2);
-  m2->Clear();
-  m2->CheckTypeAndMergeFrom(*tmp);
+void GenericSwap(MessageLite* lhs, MessageLite* rhs) {
+  const ClassData* class_data = GetClassData(*lhs);
+  std::unique_ptr<MessageLite> tmp(class_data->New(nullptr));
+  class_data->MergeToFrom(*tmp, *lhs);
+  lhs->Clear();
+  class_data->MergeToFrom(*lhs, *rhs);
+  rhs->Clear();
+  class_data->MergeToFrom(*rhs, *tmp);
 }
 
 // Returns a message owned by this Arena.  This may require Own()ing or
@@ -405,6 +413,19 @@ MessageLite* GetOwnedMessageInternal(Arena* message_arena,
     ret->CheckTypeAndMergeFrom(*submessage);
     return ret;
   }
+}
+
+internal::ExtensionSet* PrivateAccess::GetExtensionSet(MessageLite* msg) {
+  return const_cast<internal::ExtensionSet*>(
+      GetExtensionSet(static_cast<const MessageLite*>(msg)));
+}
+
+const internal::ExtensionSet* PrivateAccess::GetExtensionSet(
+    const MessageLite* msg) {
+  auto* tc_table = msg->GetTcParseTable();
+  if (tc_table->extension_offset == 0) return nullptr;
+  return reinterpret_cast<const internal::ExtensionSet*>(
+      reinterpret_cast<const char*>(msg) + tc_table->extension_offset);
 }
 
 }  // namespace internal

@@ -10,11 +10,16 @@
 // Test reflection methods for aggregate access to Repeated[Ptr]Fields.
 // This test proto2 methods on a proto2 layout.
 
+#include <cstdint>
+#include <string>
+
 #include <gtest/gtest.h>
-#include "absl/base/casts.h"
+#include "absl/log/absl_check.h"
 #include "absl/strings/cord.h"
+#include "absl/strings/str_cat.h"
+#include "google/protobuf/descriptor.h"
 #include "google/protobuf/dynamic_message.h"
-#include "google/protobuf/port.h"
+#include "google/protobuf/message.h"
 #include "google/protobuf/reflection.h"
 
 namespace google {
@@ -119,11 +124,12 @@ TEST(REFLECTION_TEST, RegularFields) {
   // Make sure types are checked correctly at runtime.
   const FieldDescriptor* fd_optional_int32 =
       desc->FindFieldByName("optional_int32");
-  EXPECT_DEATH(refl->GetRepeatedField<int32_t>(message, fd_optional_int32),
-               "requires a repeated field");
-  EXPECT_DEATH(refl->GetRepeatedField<double>(message, fd_repeated_int32),
+  EXPECT_DEATH(
+      (void)refl->GetRepeatedField<int32_t>(message, fd_optional_int32),
+      "requires a repeated field");
+  EXPECT_DEATH((void)refl->GetRepeatedField<double>(message, fd_repeated_int32),
                "not the right type");
-  EXPECT_DEATH(refl->GetRepeatedPtrField<TestAllTypes>(
+  EXPECT_DEATH((void)refl->GetRepeatedPtrField<TestAllTypes>(
                    message, fd_repeated_foreign_message),
                "wrong submessage type");
 #endif  // GTEST_HAS_DEATH_TEST
@@ -402,11 +408,11 @@ TEST(REFLECTION_TEST, RepeatedFieldRefForRegularFields) {
   // Make sure types are checked correctly at runtime.
   const FieldDescriptor* fd_optional_int32 =
       desc->FindFieldByName("optional_int32");
-  EXPECT_DEATH(refl->GetRepeatedFieldRef<int32_t>(message, fd_optional_int32),
-               "");
-  EXPECT_DEATH(refl->GetRepeatedFieldRef<double>(message, fd_repeated_int32),
-               "");
-  EXPECT_DEATH(refl->GetRepeatedFieldRef<TestAllTypes>(
+  EXPECT_DEATH(
+      (void)refl->GetRepeatedFieldRef<int32_t>(message, fd_optional_int32), "");
+  EXPECT_DEATH(
+      (void)refl->GetRepeatedFieldRef<double>(message, fd_repeated_int32), "");
+  EXPECT_DEATH((void)refl->GetRepeatedFieldRef<TestAllTypes>(
                    message, fd_repeated_foreign_message),
                "");
 
@@ -680,6 +686,23 @@ TEST(REFLECTION_TEST, RepeatedFieldRefDynamicMessage) {
   EXPECT_EQ(1234,
             refl->GetRepeatedInt32(*dynamic_message, fd_repeated_int32, 0));
 }
+
+#if GTEST_HAS_DEATH_TEST
+TEST(REFLECTION_TEST, RepeatedFieldRefAddRejectsUnrelatedMessageType) {
+  TestAllTypes m0;
+  const Reflection* refl = m0.GetReflection();
+  const Descriptor* desc = m0.GetDescriptor();
+
+  const FieldDescriptor* fd_repeated_nested_message =
+      desc->FindFieldByName("repeated_nested_message");
+  auto rf_nested_message = refl->GetMutableRepeatedFieldRef<Message>(
+      &m0, fd_repeated_nested_message);
+
+  TestAllTypes m1;
+  EXPECT_DEATH(rf_nested_message.Add(m1),
+               "Tried to copy from a message with a different type.");
+}
+#endif  // GTEST_HAS_DEATH_TEST
 
 }  // namespace
 }  // namespace protobuf

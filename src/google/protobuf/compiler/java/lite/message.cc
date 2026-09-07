@@ -25,6 +25,7 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/strings/substitute.h"
+#include "google/protobuf/compiler/code_generator_lite.h"
 #include "google/protobuf/compiler/java/context.h"
 #include "google/protobuf/compiler/java/doc_comment.h"
 #include "google/protobuf/compiler/java/field_common.h"
@@ -67,7 +68,7 @@ ImmutableMessageLiteGenerator::ImmutableMessageLiteGenerator(
   }
 }
 
-ImmutableMessageLiteGenerator::~ImmutableMessageLiteGenerator() {}
+ImmutableMessageLiteGenerator::~ImmutableMessageLiteGenerator() = default;
 
 void ImmutableMessageLiteGenerator::GenerateStaticVariables(
     io::Printer* printer, int* bytecode_estimate) {
@@ -95,7 +96,7 @@ void ImmutableMessageLiteGenerator::GenerateInterface(io::Printer* printer) {
       {"classname", std::string(descriptor_->name())},
   };
 
-  if (!context_->options().opensource_runtime) {
+  if (!google::protobuf::internal::IsOss()) {
     printer->Print("@com.google.protobuf.Internal.ProtoNonnullApi\n");
   }
   if (descriptor_->extension_range_count() > 0) {
@@ -221,14 +222,18 @@ void ImmutableMessageLiteGenerator::Generate(io::Printer* printer) {
     vars["oneof_capitalized_name"] =
         context_->GetOneofGeneratorInfo(oneof)->capitalized_name;
     vars["oneof_index"] = absl::StrCat((oneof)->index());
-    if (context_->options().opensource_runtime) {
+    if (google::protobuf::internal::IsOss()) {
       // oneofCase_ and oneof_
       printer->Print(vars,
                      "private int $oneof_name$Case_ = 0;\n"
                      "private java.lang.Object $oneof_name$_;\n");
     }
     // OneofCase enum
-    printer->Print(vars, "public enum ${$$oneof_capitalized_name$Case$}$ {\n");
+    printer->Print(
+        vars,
+        "public enum ${$$oneof_capitalized_name$Case$}$\n"
+        "    implements "
+        "com.google.protobuf.AbstractMessageLite.InternalOneOfEnum {\n");
     printer->Annotate("{", "}", oneof);
     printer->Indent();
     for (int j = 0; j < (oneof)->field_count(); j++) {
@@ -245,7 +250,7 @@ void ImmutableMessageLiteGenerator::Generate(io::Printer* printer) {
                    "private $oneof_capitalized_name$Case(int value) {\n"
                    "  this.value = value;\n"
                    "}\n");
-    if (context_->options().opensource_runtime) {
+    if (google::protobuf::internal::IsOss()) {
       printer->Print(
           vars,
           "/**\n"
@@ -257,7 +262,7 @@ void ImmutableMessageLiteGenerator::Generate(io::Printer* printer) {
           "}\n"
           "\n");
     }
-    if (!context_->options().opensource_runtime) {
+    if (!google::protobuf::internal::IsOss()) {
       printer->Print(
           "@com.google.protobuf.Internal.ProtoMethodMayReturnNull\n");
     }
@@ -278,7 +283,7 @@ void ImmutableMessageLiteGenerator::Generate(io::Printer* printer) {
         "}\n"
         // TODO: Rename this to "getFieldNumber" or something to
         // disambiguate it from actual proto enums.
-        "public int getNumber() {\n"
+        "@java.lang.Override public int getNumber() {\n"
         "  return this.value;\n"
         "}\n",
         "cap_oneof_name", absl::AsciiStrToUpper(vars["oneof_name"]));
@@ -300,7 +305,7 @@ void ImmutableMessageLiteGenerator::Generate(io::Printer* printer) {
                    "  $oneof_name$_ = null;\n"
                    "}\n"
                    "\n");
-    printer->Annotate("{", "}", oneof);
+    printer->Annotate("{", "}", oneof, io::AnnotationCollector::Semantic::kSet);
   }
 
   // Fields
@@ -351,38 +356,26 @@ void ImmutableMessageLiteGenerator::Generate(io::Printer* printer) {
   printer->Indent();
   GenerateDynamicMethodNewBuildMessageInfo(printer);
   printer->Outdent();
+  printer->Print("}\n");
 
   printer->Print(
-      "}\n"
       "case GET_DEFAULT_INSTANCE: {\n"
       "  return DEFAULT_INSTANCE;\n"
       "}\n"
       "case GET_PARSER: {\n"
-      // Generally one would use the lazy initialization holder pattern for
-      // manipulating static fields but that has exceptional cost on Android as
-      // it will generate an extra class for every message. Instead, use the
-      // double-check locking pattern which works just as well.
-      //
-      // The "parser" temporary mirrors the "PARSER" field to eliminate a read
-      // at the final return statement.
-      "  com.google.protobuf.Parser<$classname$> parser = PARSER;\n"
-      "  if (parser == null) {\n"
-      "    synchronized ($classname$.class) {\n"
-      "      parser = PARSER;\n"
-      "      if (parser == null) {\n"
-      "        parser =\n"
-      "            new DefaultInstanceBasedParser<$classname$>(\n"
-      "                DEFAULT_INSTANCE);\n"
-      "        PARSER = parser;\n"
-      "      }\n"
-      "    }\n"
-      "  }\n"
-      "  return parser;\n",
+      "  return "
+      "com.google.protobuf.GeneratedMessageLite.getParserForClass($classname$."
+      "class);\n"
+      "}\n",
       "classname", name_resolver_->GetImmutableClassName(descriptor_));
 
+  // GET_MEMOIZED_IS_INITIALIZED and SET_MEMOIZED_IS_INITIALIZED cases are only
+  // generated for messages that cannot be statically proven to never
+  // transitively contain a required field. For other messages, these
+  // cases are omitted to reduce gencode size. Unhandled cases in dynamicMethod
+  // return null, causing GeneratedMessageLite.isInitialized() to return true.
   if (HasRequiredFields(descriptor_)) {
     printer->Print(
-        "}\n"
         "case GET_MEMOIZED_IS_INITIALIZED: {\n"
         "  return memoizedIsInitialized;\n"
         "}\n"
@@ -390,23 +383,12 @@ void ImmutableMessageLiteGenerator::Generate(io::Printer* printer) {
         "  memoizedIsInitialized = (byte) (arg0 == null ? 0 : 1);\n"
         "  return null;\n"
         "}\n");
-  } else {
-    printer->Print(
-        "}\n"
-        "case GET_MEMOIZED_IS_INITIALIZED: {\n"
-        "  return (byte) 1;\n"
-        "}\n"
-        "// SET_MEMOIZED_IS_INITIALIZED is never called for this message.\n"
-        "// So it can do anything. Combine with default case for smaller "
-        "codegen.\n"
-        "case SET_MEMOIZED_IS_INITIALIZED:\n");
   }
 
   printer->Outdent();
   printer->Print(
       "}\n"
-      "// Should never happen. Generates tight code to throw an exception.\n"
-      "throw null;\n");
+      "return null;\n");
   printer->Outdent();
   printer->Print(
       "}\n"
@@ -526,7 +508,7 @@ void ImmutableMessageLiteGenerator::GenerateDynamicMethodNewBuildMessageInfo(
 
     int map_count = 0;
     int repeated_count = 0;
-    std::unique_ptr<const FieldDescriptor*[]> sorted_fields(
+    std::vector<const FieldDescriptor*> sorted_fields(
         SortFieldsByNumber(descriptor_));
     for (int i = 0; i < descriptor_->field_count(); i++) {
       const FieldDescriptor* field = sorted_fields[i];
@@ -663,7 +645,7 @@ void ImmutableMessageLiteGenerator::GenerateParseFromMethods(
       "\n",
       "classname", name_resolver_->GetImmutableClassName(descriptor_),
       "parsedelimitedreturnannotation",
-      context_->options().opensource_runtime
+      google::protobuf::internal::IsOss()
           ? ""
           : "@com.google.protobuf.Internal.ProtoMethodMayReturnNull");
 }
@@ -722,11 +704,10 @@ void ImmutableMessageLiteGenerator::GenerateConstructor(io::Printer* printer) {
 // ===================================================================
 void ImmutableMessageLiteGenerator::GenerateParser(io::Printer* printer) {
   printer->Print(
-      "private static volatile com.google.protobuf.Parser<$classname$> "
-      "PARSER;\n"
-      "\n"
       "public static com.google.protobuf.Parser<$classname$> parser() {\n"
-      "  return DEFAULT_INSTANCE.getParserForType();\n"
+      "  return "
+      "com.google.protobuf.GeneratedMessageLite.getParserForClass($classname$."
+      "class);\n"
       "}\n",
       "classname", descriptor_->name());
 }

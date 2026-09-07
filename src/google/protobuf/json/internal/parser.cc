@@ -11,7 +11,6 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
-#include <optional>
 #include <string>
 #include <utility>
 
@@ -29,6 +28,7 @@
 #include "absl/strings/str_format.h"
 #include "absl/strings/str_split.h"
 #include "absl/strings/string_view.h"
+#include "absl/types/optional.h"
 #include "absl/types/span.h"
 #include "google/protobuf/descriptor.h"
 #include "google/protobuf/dynamic_message.h"
@@ -333,20 +333,20 @@ absl::StatusOr<std::string> ParseStrOrBytes(JsonLexer& lex,
 }
 
 template <typename Traits>
-absl::StatusOr<std::optional<int32_t>> ParseEnumFromStr(
+absl::StatusOr<absl::optional<int32_t>> ParseEnumFromStr(
     const json_internal::ParseOptions& options, MaybeOwnedString& str,
     Field<Traits> field) {
   absl::StatusOr<int32_t> value = Traits::EnumNumberByName(
       field, str.AsView(), options.case_insensitive_enum_parsing);
   if (value.ok()) {
-    return std::optional<int32_t>(*value);
+    return absl::optional<int32_t>(*value);
   }
 
   int32_t i;
   if (absl::SimpleAtoi(str.AsView(), &i)) {
-    return std::optional<int32_t>(i);
+    return absl::optional<int32_t>(i);
   } else if (options.ignore_unknown_fields) {
-    return {std::nullopt};
+    return {absl::nullopt};
   }
 
   return value.status();
@@ -355,8 +355,8 @@ absl::StatusOr<std::optional<int32_t>> ParseEnumFromStr(
 // Parses an enum; can return nullopt if a quoted enumerator that we don't
 // know about is received and `ignore_unknown_fields` is set.
 template <typename Traits>
-absl::StatusOr<std::optional<int32_t>> ParseEnum(JsonLexer& lex,
-                                                 Field<Traits> field) {
+absl::StatusOr<absl::optional<int32_t>> ParseEnum(JsonLexer& lex,
+                                                  Field<Traits> field) {
   absl::StatusOr<JsonLexer::Kind> kind = lex.PeekKind();
   RETURN_IF_ERROR(kind.status());
 
@@ -369,7 +369,7 @@ absl::StatusOr<std::optional<int32_t>> ParseEnum(JsonLexer& lex,
       auto e = ParseEnumFromStr<Traits>(lex.options(), str->value, field);
       RETURN_IF_ERROR(e.status());
       if (!e->has_value()) {
-        return {std::nullopt};
+        return {absl::nullopt};
       }
       n = **e;
       break;
@@ -397,28 +397,19 @@ absl::Status ParseSingular(JsonLexer& lex, Field<Traits> field,
   auto field_type = Traits::FieldType(field);
   if (lex.Peek(JsonLexer::kNull)) {
     auto message_type = ClassifyMessage(Traits::FieldTypeName(field));
-    switch (field_type) {
-      case FieldDescriptor::TYPE_ENUM:
-        if (message_type == MessageType::kNull) {
-          Traits::SetEnum(field, msg, 0);
-        }
-        break;
-      case FieldDescriptor::TYPE_MESSAGE: {
-        if (message_type == MessageType::kValue) {
-          return Traits::NewMsg(
-              field, msg,
-              [&](const Desc<Traits>& type, Msg<Traits>& msg) -> absl::Status {
-                auto field = Traits::FieldByNumber(type, 1);
-                ABSL_DCHECK(field.has_value());
-                RETURN_IF_ERROR(lex.Expect("null"));
-                Traits::SetEnum(Traits::MustHaveField(type, 1), msg, 0);
-                return absl::OkStatus();
-              });
-        }
-        break;
-      }
-      default:
-        break;
+
+    if (message_type == MessageType::kNull) {
+      Traits::SetEnum(field, msg, 0);
+    } else if (message_type == MessageType::kValue) {
+      return Traits::NewMsg(
+          field, msg,
+          [&](const Desc<Traits>& type, Msg<Traits>& msg) -> absl::Status {
+            auto field = Traits::FieldByNumber(type, 1);
+            ABSL_DCHECK(field.has_value());
+            RETURN_IF_ERROR(lex.Expect("null"));
+            Traits::SetEnum(Traits::MustHaveField(type, 1), msg, 0);
+            return absl::OkStatus();
+          });
     }
     return lex.Expect("null");
   }
@@ -482,7 +473,7 @@ absl::Status ParseSingular(JsonLexer& lex, Field<Traits> field,
           Traits::SetBool(field, msg, false);
           break;
         case JsonLexer::kStr: {
-          if (!lex.options().allow_legacy_syntax) {
+          if (!lex.options().allow_legacy_nonconformant_behavior) {
             goto bad;
           }
 
@@ -513,7 +504,7 @@ absl::Status ParseSingular(JsonLexer& lex, Field<Traits> field,
       break;
     }
     case FieldDescriptor::TYPE_ENUM: {
-      absl::StatusOr<std::optional<int32_t>> x = ParseEnum<Traits>(lex, field);
+      absl::StatusOr<absl::optional<int32_t>> x = ParseEnum<Traits>(lex, field);
       RETURN_IF_ERROR(x.status());
 
       if (x->has_value() || Traits::IsImplicitPresence(field)) {
@@ -672,7 +663,7 @@ absl::Status ParseArray(JsonLexer& lex, Field<Traits> field, Msg<Traits>& msg) {
         return ParseSingular<Traits>(lex, field, msg);
       }
 
-      if (lex.options().allow_legacy_syntax) {
+      if (lex.options().allow_legacy_nonconformant_behavior) {
         RETURN_IF_ERROR(lex.Expect("null"));
         return EmitNull<Traits>(lex, field, msg);
       }
@@ -689,7 +680,7 @@ absl::Status ParseArray(JsonLexer& lex, Field<Traits> field, Msg<Traits>& msg) {
     // the custom parser handler.
     bool can_flatten =
         type != MessageType::kValue && type != MessageType::kList;
-    if (can_flatten && lex.options().allow_legacy_syntax &&
+    if (can_flatten && lex.options().allow_legacy_nonconformant_behavior &&
         lex.Peek(JsonLexer::kArr)) {
       // You read that right. In legacy mode, if we encounter an array within
       // an array, we just flatten it as part of the current array!
@@ -713,7 +704,7 @@ absl::Status ParseMapOfEnumsEntry(JsonLexer& lex, Field<Traits> map_field,
                                   Msg<Traits>& parent_msg,
                                   LocationWith<MaybeOwnedString>& key) {
   // Parse the enum value from string, advancing the lexer.
-  std::optional<int32_t> enum_value;
+  absl::optional<int32_t> enum_value;
   RETURN_IF_ERROR(Traits::WithFieldType(
       map_field, [&lex, &enum_value](const Desc<Traits>& map_entry_desc) {
         ASSIGN_OR_RETURN(
@@ -787,7 +778,7 @@ absl::Status ParseMap(JsonLexer& lex, Field<Traits> field, Msg<Traits>& msg) {
       });
 }
 
-std::optional<uint32_t> TakeTimeDigitsWithSuffixAndAdvance(
+absl::optional<uint32_t> TakeTimeDigitsWithSuffixAndAdvance(
     absl::string_view& data, int max_digits, absl::string_view end) {
   ABSL_DCHECK_LE(max_digits, 9);
 
@@ -795,7 +786,7 @@ std::optional<uint32_t> TakeTimeDigitsWithSuffixAndAdvance(
   int limit = max_digits;
   while (!data.empty()) {
     if (limit-- < 0) {
-      return std::nullopt;
+      return absl::nullopt;
     }
     uint32_t digit = data[0] - '0';
     if (digit >= 10) {
@@ -807,14 +798,14 @@ std::optional<uint32_t> TakeTimeDigitsWithSuffixAndAdvance(
     data = data.substr(1);
   }
   if (!absl::StartsWith(data, end)) {
-    return std::nullopt;
+    return absl::nullopt;
   }
 
   data = data.substr(end.size());
   return val;
 }
 
-std::optional<int32_t> TakeNanosAndAdvance(absl::string_view& data) {
+absl::optional<int32_t> TakeNanosAndAdvance(absl::string_view& data) {
   int32_t frac_secs = 0;
   size_t frac_digits = 0;
   if (absl::StartsWith(data, ".")) {
@@ -827,7 +818,7 @@ std::optional<int32_t> TakeNanosAndAdvance(absl::string_view& data) {
     auto digits = data.substr(1, frac_digits);
     if (frac_digits == 0 || frac_digits > 9 ||
         !absl::SimpleAtoi(digits, &frac_secs)) {
-      return std::nullopt;
+      return absl::nullopt;
     }
     data = data.substr(frac_digits + 1);
   }
@@ -1023,7 +1014,7 @@ absl::Status ParseFieldMask(JsonLexer& lex, const Desc<Traits>& desc,
       } else if (absl::ascii_isupper(c)) {
         snake_path.push_back('_');
         snake_path.push_back(absl::ascii_tolower(c));
-      } else if (lex.options().allow_legacy_syntax) {
+      } else if (lex.options().allow_legacy_nonconformant_behavior) {
         snake_path.push_back(c);
       } else {
         return str->loc.Invalid("unexpected character in FieldMask");
@@ -1045,7 +1036,7 @@ absl::Status ParseAny(JsonLexer& lex, const Desc<Traits>& desc,
 
   // Search for @type, buffering the entire object along the way so we can
   // reparse it.
-  std::optional<MaybeOwnedString> type_url;
+  absl::optional<MaybeOwnedString> type_url;
   RETURN_IF_ERROR(lex.VisitObject(
       [&](const LocationWith<MaybeOwnedString>& key) -> absl::Status {
         if (key.value == "@type") {
@@ -1069,7 +1060,8 @@ absl::Status ParseAny(JsonLexer& lex, const Desc<Traits>& desc,
   // limit.
   JsonLexer any_lex(&in, lex.options(), &lex.path(), mark.loc);
 
-  if (!type_url.has_value() && !lex.options().allow_legacy_syntax) {
+  if (!type_url.has_value() &&
+      !lex.options().allow_legacy_nonconformant_behavior) {
     return mark.loc.Invalid("missing @type in Any");
   }
 
@@ -1085,7 +1077,7 @@ absl::Status ParseAny(JsonLexer& lex, const Desc<Traits>& desc,
         });
   } else {
     // Empty {} is accepted in legacy mode.
-    ABSL_DCHECK(lex.options().allow_legacy_syntax);
+    ABSL_DCHECK(lex.options().allow_legacy_nonconformant_behavior);
     RETURN_IF_ERROR(any_lex.VisitObject([&](auto&) {
       return mark.loc.Invalid(
           "in legacy mode, missing @type in Any is only allowed for an empty "
@@ -1194,9 +1186,6 @@ absl::Status ParseStructValue(JsonLexer& lex, const Desc<Traits>& desc,
   auto pop = lex.path().Push("<struct>", FieldDescriptor::TYPE_MESSAGE,
                              Traits::FieldTypeName(entry_field));
 
-  // Structs are always cleared even if set to {}.
-  Traits::RecordAsSeen(entry_field, msg);
-
   // Parsing a map does the right thing: Struct has a single map<string,
   // Value> field; keys are correctly parsed as strings, and the values
   // recurse into ParseMessage, which will be routed into ParseValue. This
@@ -1212,8 +1201,6 @@ absl::Status ParseListValue(JsonLexer& lex, const Desc<Traits>& desc,
   auto pop = lex.path().Push("<list>", FieldDescriptor::TYPE_MESSAGE,
                              Traits::FieldTypeName(entry_field));
 
-  // ListValues are always cleared even if set to [].
-  Traits::RecordAsSeen(entry_field, msg);
   // Parsing an array does the right thing: see the analogous comment in
   // ParseStructValue.
   return ParseArray<Traits>(lex, entry_field, msg);
@@ -1222,7 +1209,7 @@ absl::Status ParseListValue(JsonLexer& lex, const Desc<Traits>& desc,
 template <typename Traits>
 absl::Status ParseField(JsonLexer& lex, const Desc<Traits>& desc,
                         absl::string_view name, Msg<Traits>& msg) {
-  std::optional<Field<Traits>> field;
+  absl::optional<Field<Traits>> field;
   if (absl::StartsWith(name, "[") && absl::EndsWith(name, "]")) {
     absl::string_view extn_name = name.substr(1, name.size() - 2);
     field = Traits::ExtensionByName(desc, extn_name);
@@ -1253,13 +1240,41 @@ absl::Status ParseField(JsonLexer& lex, const Desc<Traits>& desc,
   auto pop = lex.path().Push(name, Traits::FieldType(*field),
                              Traits::FieldTypeName(*field));
 
-  if (Traits::HasParsed(
-          *field, msg,
-          /*allow_repeated_non_oneof=*/lex.options().allow_legacy_syntax) &&
-      !lex.Peek(JsonLexer::kNull)) {
+  // Any `null` values eagerly no-op, except for exactly the special cases of
+  // google.protobuf.Value message and google.protobuf.NullValue enum.
+  // Note that spec behavior is that we should do duplicate key checking in the
+  // case of a null value, but this implementation currently does not
+  // (b/519557203).
+  if (lex.Peek(JsonLexer::kNull)) {
+    MessageType type = ClassifyMessage(Traits::FieldTypeName(*field));
+    if (type != MessageType::kValue && type != MessageType::kNull) {
+      return lex.Expect("null");
+    }
+  }
+
+  SeenState seen = Traits::RecordAsSeen(*field, msg);
+
+  // Legacy nonconformant behavior only enforces duplicate key checking for
+  // fields within the same oneof, otherwise enforce duplicate keys for all
+  // fields.
+  if (seen == SeenState::kOneofAlreadySeen ||
+      (seen == SeenState::kFieldAlreadySeen &&
+       !lex.options().allow_legacy_nonconformant_behavior)) {
     return lex.Invalid(absl::StrFormat(
         "'%s' has already been set (either directly or as part of a oneof)",
         name));
+  }
+
+  // Message and repeated fields are cleared on first sight (meaning, it will
+  // clear what was in the message before the parse began), but not cleared
+  // in the case of the second occurance of the same key in the same JSON
+  // payload (if duplicate keys are accepted, which they are in the current
+  // default legacy mode).
+  if (seen == SeenState::kFirstSeen &&
+      (Traits::IsRepeated(*field) ||
+       Traits::FieldType(*field) == FieldDescriptor::TYPE_MESSAGE ||
+       Traits::FieldType(*field) == FieldDescriptor::TYPE_GROUP)) {
+    Traits::ClearField(*field, msg);
   }
 
   if (Traits::IsMap(*field)) {
@@ -1267,7 +1282,8 @@ absl::Status ParseField(JsonLexer& lex, const Desc<Traits>& desc,
   }
 
   if (Traits::IsRepeated(*field)) {
-    if (lex.options().allow_legacy_syntax && !lex.Peek(JsonLexer::kArr)) {
+    if (lex.options().allow_legacy_nonconformant_behavior &&
+        !lex.Peek(JsonLexer::kArr)) {
       // The original ESF parser permits a single element in place of an array
       // thereof.
       return ParseSingular<Traits>(lex, *field, msg);
@@ -1297,7 +1313,8 @@ absl::Status ParseMessage(JsonLexer& lex, const Desc<Traits>& desc,
     // It is not clear if this counts as out-of-spec, but we're treating it as
     // such.
     bool is_upcoming_object = lex.Peek(JsonLexer::kObj);
-    if (!(is_upcoming_object && lex.options().allow_legacy_syntax)) {
+    if (!(is_upcoming_object &&
+          lex.options().allow_legacy_nonconformant_behavior)) {
       switch (type) {
         case MessageType::kList:
           return ParseListValue<Traits>(lex, desc, msg);
@@ -1347,6 +1364,15 @@ absl::Status ParseMessage(JsonLexer& lex, const Desc<Traits>& desc,
 absl::Status JsonStreamToMessage(io::ZeroCopyInputStream* input,
                                  Message* message,
                                  json_internal::ParseOptions options) {
+  // Pre-existing special case behavior: if a Struct, List, or Value WKT is
+  // provided, they do fully get cleared eagerly. All other types have some
+  // limited merge behavior instead.
+  MessageType type = ClassifyMessage(message->GetDescriptor()->full_name());
+  if (type == MessageType::kStruct || type == MessageType::kList ||
+      type == MessageType::kValue) {
+    message->Clear();
+  }
+
   MessagePath path(message->GetDescriptor()->full_name());
   JsonLexer lex(input, options, &path);
 
@@ -1382,8 +1408,8 @@ absl::Status JsonToBinaryStream(google::protobuf::util::TypeResolver* resolver,
   // input and output streams.
   std::string copy;
   std::string out;
-  std::optional<io::ArrayInputStream> tee_input;
-  std::optional<io::StringOutputStream> tee_output;
+  absl::optional<io::ArrayInputStream> tee_input;
+  absl::optional<io::StringOutputStream> tee_output;
   if (PROTOBUF_DEBUG) {
     const void* data;
     int len;

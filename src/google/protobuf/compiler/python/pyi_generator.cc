@@ -24,6 +24,7 @@
 #include "absl/synchronization/mutex.h"
 #include "google/protobuf/compiler/code_generator.h"
 #include "google/protobuf/compiler/python/helpers.h"
+#include "google/protobuf/compiler/python/names.h"
 #include "google/protobuf/descriptor.h"
 #include "google/protobuf/descriptor.pb.h"
 #include "google/protobuf/io/printer.h"
@@ -45,7 +46,7 @@ std::string PyiGenerator::ModuleLevelName(const DescriptorT& descriptor) const {
     std::string module_alias;
     const absl::string_view filename = descriptor.file()->name();
     if (import_map_.find(filename) == import_map_.end()) {
-      std::string module_name = ModuleName(descriptor.file()->name());
+      std::string module_name = ModuleName(descriptor.file());
       std::vector<absl::string_view> tokens = absl::StrSplit(module_name, '.');
       module_alias = absl::StrCat("_", tokens.back());
     } else {
@@ -151,7 +152,7 @@ void PyiGenerator::PrintImportForDescriptor(
     const FileDescriptor& desc, absl::flat_hash_set<std::string>* seen_aliases,
     bool* has_importlib) const {
   const absl::string_view filename = desc.name();
-  std::string module_name_owned = StrippedModuleName(filename);
+  std::string module_name_owned = StrippedModuleName(&desc);
   absl::string_view module_name(module_name_owned);
   size_t last_dot_pos = module_name.rfind('.');
   std::string alias = absl::StrCat("_", module_name.substr(last_dot_pos + 1));
@@ -256,6 +257,8 @@ void PyiGenerator::PrintImports() const {
   } else {
     if (file_->service_count() > 0) {
       printer_->Print(
+          "from google3.net.rpc.python import legacy_stream_token as "
+          "_legacy_stream_token\n"
           "from google3.net.rpc.python import proto_python_api_2_stub as "
           "_proto_python_api_2_stub\n"
           "from google3.net.rpc.python import pywraprpc as _pywraprpc\n"
@@ -294,7 +297,7 @@ void PyiGenerator::PrintImports() const {
   // Public imports
   for (int i = 0; i < file_->public_dependency_count(); ++i) {
     const FileDescriptor* public_dep = file_->public_dependency(i);
-    std::string module_name = StrippedModuleName(public_dep->name());
+    std::string module_name = StrippedModuleName(public_dep);
     // Top level messages in public imports
     for (int i = 0; i < public_dep->message_type_count(); ++i) {
       printer_->Print(
@@ -366,6 +369,7 @@ void PyiGenerator::PrintExtensions(const DescriptorT& descriptor) const {
     absl::AsciiStrToUpper(&constant_name);
     printer_->Print("$constant_name$: _ClassVar[int]\n",
                     "constant_name", constant_name);
+    Annotate("constant_name", extension_field);
     printer_->Print("$name$: _descriptor.FieldDescriptor\n",
                     "name", extension_field->name());
     Annotate("name", extension_field);
@@ -401,7 +405,7 @@ std::string PyiGenerator::GetFieldType(
       std::string name = ModuleLevelName(*field_des.message_type());
       if ((containing_des.containing_type() != nullptr &&
            name == containing_des.name())) {
-        std::string module = ModuleName(field_des.file()->name());
+        std::string module = ModuleName(field_des.file());
         name = absl::StrCat(module, ".", name);
       }
       return name;
@@ -482,6 +486,7 @@ void PyiGenerator::PrintMessage(const Descriptor& message_descriptor,
     printer_->Print(
         "$field_number_name$: _ClassVar[int]\n", "field_number_name",
         absl::StrCat(absl::AsciiStrToUpper(field_des.name()), "_FIELD_NUMBER"));
+    Annotate("field_number_name", &field_des);
   }
   // Prints field name and type
   for (int i = 0; i < message_descriptor.field_count(); ++i) {

@@ -15,10 +15,14 @@ load("//bazel/common:proto_common.bzl", "proto_common")
 load("//bazel/common:proto_info.bzl", "ProtoInfo")
 load("//bazel/private:toolchain_helpers.bzl", "toolchains")
 
-STRICT_DEPS_FLAG_TEMPLATE = (
-    #
+DIRECT_DEPS_FLAG_TEMPLATE = (
     "--direct_dependencies_violation_msg=" +
-    "%%s is imported, but %s doesn't directly depend on a proto_library that 'srcs' it."
+    "%%s is imported, but %s doesn't have direct `deps` on a proto_library that 'srcs' it."
+)
+
+OPTION_DEPS_FLAG_TEMPLATE = (
+    "--option_dependencies_violation_msg=" +
+    "%%s is option imported, but %s doesn't have direct `option_deps` on a proto_library that 'srcs' it."
 )
 
 def _check_srcs_package(target_package, srcs):
@@ -63,6 +67,7 @@ def _proto_library_impl(ctx):
     _check_srcs_package(ctx.label.package, ctx.attr.srcs)
     srcs = ctx.files.srcs
     deps = [dep[ProtoInfo] for dep in ctx.attr.deps]
+    option_deps = [dep[ProtoInfo] for dep in ctx.attr.option_deps]
     exports = [dep[ProtoInfo] for dep in ctx.attr.exports]
     import_prefix = _get_import_prefix(ctx)
     strip_import_prefix = _get_strip_import_prefix(ctx)
@@ -75,19 +80,25 @@ def _proto_library_impl(ctx):
             if not proto.allow_exports[_PackageSpecificationInfo].contains(ctx.label):
                 fail("proto_library '%s' can't be reexported in package '//%s'" % (proto.direct_descriptor_set.owner, ctx.label.package))
 
+    if len(ctx.attr.extension_declarations) > 0 and ctx.label.package != "net/proto2/bridge/proto":
+        fail("extension_declarations: this attribute is only allowed on //net/proto2/bridge/proto:message_set")
+
     proto_path, virtual_srcs = _process_srcs(ctx, srcs, import_prefix, strip_import_prefix)
     descriptor_set = ctx.actions.declare_file(ctx.label.name + "-descriptor-set.proto.bin")
+
     proto_info = ProtoInfo(
         srcs = virtual_srcs,
         deps = deps,
         descriptor_set = descriptor_set,
+        option_deps = option_deps,
         proto_path = proto_path,
         workspace_root = ctx.label.workspace_root,
         bin_dir = ctx.bin_dir.path,
         allow_exports = ctx.attr.allow_exports,
+        extension_declarations = ctx.files.extension_declarations,
     )
 
-    _write_descriptor_set(ctx, proto_info, deps, exports, descriptor_set)
+    _write_descriptor_set(ctx, proto_info, deps, option_deps, exports, descriptor_set)
 
     # We assume that the proto sources will not have conflicting artifacts
     # with the same root relative path
@@ -102,6 +113,7 @@ def _proto_library_impl(ctx):
             default_runfiles = ctx.runfiles(),  # empty
             data_runfiles = data_runfiles,
         ),
+        OutputGroupInfo(_validation = ctx.attr._authenticity_validation[OutputGroupInfo]._validation),
     ]
 
 def _process_srcs(ctx, srcs, import_prefix, strip_import_prefix):
@@ -154,13 +166,14 @@ def _symlink_to_virtual_imports(ctx, srcs, import_prefix, strip_import_prefix):
         virtual_srcs.append(virtual_src)
     return proto_path, virtual_srcs
 
-def _write_descriptor_set(ctx, proto_info, deps, exports, descriptor_set):
+def _write_descriptor_set(ctx, proto_info, deps, option_deps, exports, descriptor_set):
     """Writes descriptor set."""
     if proto_info.direct_sources == []:
         ctx.actions.write(descriptor_set, "")
         return
 
-    dependencies_descriptor_sets = depset(transitive = [dep.transitive_descriptor_sets for dep in deps])
+    # Descriptor sets for transitive `deps` of `deps` and `option_deps`.
+    dependencies_descriptor_sets = depset(transitive = [dep.transitive_descriptor_sets for dep in deps + option_deps])
 
     args = ctx.actions.args()
 
@@ -168,9 +181,11 @@ def _write_descriptor_set(ctx, proto_info, deps, exports, descriptor_set):
         args.add("--include_source_info")
     args.add("--retain_options")
 
-    strict_deps = ctx.attr._strict_proto_deps[BuildSettingInfo].value
-    if strict_deps:
+    strict_proto_deps = ctx.attr._strict_proto_deps[BuildSettingInfo].value
+
+    if strict_proto_deps:
         if proto_info.direct_sources:
+            # Direct sources can be option imported in addition to `deps`.
             strict_importable_sources = depset(
                 direct = proto_info.direct_sources,
                 transitive = [dep.check_deps_sources for dep in deps],
@@ -191,10 +206,25 @@ def _write_descriptor_set(ctx, proto_info, deps, exports, descriptor_set):
             args.add("--direct_dependencies=")
 
         # Set `-direct_dependencies_violation_msg=`
-        args.add(ctx.label, format = STRICT_DEPS_FLAG_TEMPLATE)
+        args.add(ctx.label, format = DIRECT_DEPS_FLAG_TEMPLATE)
 
-    strict_imports = ctx.attr._strict_public_imports[BuildSettingInfo].value
-    if strict_imports:
+        # Direct sources can be option imported in addition to `option_deps`.
+        # `option_deps` can't be set anyways unless `direct_sources` is non-empty.
+        option_importable_sources = depset(
+            direct = proto_info.direct_sources,
+            transitive = [dep.check_deps_sources for dep in option_deps],
+        )
+        args.add_joined(
+            "--option_dependencies",
+            option_importable_sources,
+            map_each = proto_common.get_import_path,
+            join_with = ":",
+        )
+
+        # Set `-option_dependencies_violation_msg=`
+        args.add(ctx.label, format = OPTION_DEPS_FLAG_TEMPLATE)
+
+    if ctx.attr._strict_public_imports[BuildSettingInfo].value:
         public_import_protos = depset(transitive = [export.check_deps_sources for export in exports])
         if not public_import_protos:
             # This line is necessary to trigger the check.
@@ -206,6 +236,7 @@ def _write_descriptor_set(ctx, proto_info, deps, exports, descriptor_set):
                 map_each = proto_common.get_import_path,
                 join_with = ":",
             )
+
     if proto_common.INCOMPATIBLE_ENABLE_PROTO_TOOLCHAIN_RESOLUTION:
         toolchain = ctx.toolchains[toolchains.PROTO_TOOLCHAIN]
         if not toolchain:
@@ -218,7 +249,7 @@ def _write_descriptor_set(ctx, proto_info, deps, exports, descriptor_set):
             mnemonic = "GenProtoDescriptorSet",
             progress_message = "Generating Descriptor Set proto_library %{label}",
             proto_compiler = ctx.executable._proto_compiler,
-            protoc_opts = ctx.fragments.proto.experimental_protoc_opts,
+            protoc_opts = ctx.attr._protocopt[BuildSettingInfo].value,
             plugin = None,
         )
 
@@ -227,6 +258,7 @@ def _write_descriptor_set(ctx, proto_info, deps, exports, descriptor_set):
         proto_info,
         proto_lang_toolchain_info,
         generated_files = [descriptor_set],
+        # TODO: Fix protoc to actually use the transitive descriptor sets.
         additional_inputs = dependencies_descriptor_sets,
         additional_args = args,
     )
@@ -267,6 +299,9 @@ See documentation in <code>proto_info.bzl</code>.
 </ul>
 """ + _extra_doc,
     attrs = {
+        "_protocopt": attr.label(
+            default = "//bazel/flags:protocopt",
+        ),
         "srcs": attr.label_list(
             allow_files = [".proto", ".protodevel"],
             flags = ["DIRECT_COMPILE_TIME_INPUT"],
@@ -282,6 +317,13 @@ This pattern can be used to e.g. export a public api under a persistent name."""
             providers = [ProtoInfo],
             doc = """
 The list of other <code>proto_library</code> rules that the target depends upon.
+A <code>proto_library</code> may only depend on other <code>proto_library</code>
+targets. It may not depend on language-specific libraries.""",
+        ),
+        "option_deps": attr.label_list(
+            providers = [ProtoInfo],
+            doc = """
+The list of other <code>proto_library</code> rules that the target depends upon for options only.
 A <code>proto_library</code> may only depend on other <code>proto_library</code>
 targets. It may not depend on language-specific libraries.""",
         ),
@@ -330,24 +372,34 @@ lang_proto_library that is not in one of the listed packages.""",
             allow_files = True,
             flags = ["SKIP_CONSTRAINTS_OVERRIDE"],
         ),
+        "extension_declarations": attr.label_list(
+            allow_files = [".txtpb"],
+            doc = """
+List of files containing extension declarations. This attribute is only allowed
+for use with MessageSet.
+""",
+        ),
+        "_authenticity_validation": attr.label(
+            default = "//bazel/private/oss/toolchains/prebuilt:authenticity_validation",
+            doc = "Validate that the binary registered on the toolchain is produced by protobuf team",
+        ),
         # buildifier: disable=attr-license (calling attr.license())
         "licenses": attr.license() if hasattr(attr, "license") else attr.string_list(),
         "_experimental_proto_descriptor_sets_include_source_info": attr.label(
-            default = "//bazel/private:experimental_proto_descriptor_sets_include_source_info",
+            default = Label("//bazel/flags:experimental_proto_descriptor_sets_include_source_info"),
         ),
         "_strict_proto_deps": attr.label(
-            default =
-                "//bazel/private:strict_proto_deps",
+            default = Label("//bazel/flags:strict_proto_deps"),
         ),
         "_strict_public_imports": attr.label(
-            default = "//bazel/private:strict_public_imports",
+            default = Label("//bazel/flags:strict_public_imports"),
         ),
     } | toolchains.if_legacy_toolchain({
         "_proto_compiler": attr.label(
             cfg = "exec",
             executable = True,
             allow_files = True,
-            default = "//src/google/protobuf/compiler:protoc_minimal",
+            default = Label("//src/google/protobuf/compiler:protoc_minimal"),
         ),
     }),  # buildifier: disable=attr-licenses (attribute called licenses)
     fragments = [

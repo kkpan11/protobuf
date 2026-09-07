@@ -36,7 +36,8 @@ import java.util.RandomAccess;
  *
  * @author jonp@google.com (Jon Perlow)
  */
-public class LazyStringArrayList extends AbstractProtobufList<String>
+public
+class LazyStringArrayList extends AbstractProtobufList<String>
     implements LazyStringList, RandomAccess {
 
   private static final LazyStringArrayList EMPTY_LIST = new LazyStringArrayList(false);
@@ -161,6 +162,7 @@ public class LazyStringArrayList extends AbstractProtobufList<String>
   }
 
   @Override
+  @CanIgnoreReturnValue
   public boolean addAll(Collection<? extends String> c) {
     // The default implementation of AbstractCollection.addAll(Collection)
     // delegates to add(Object). This implementation instead delegates to
@@ -170,6 +172,7 @@ public class LazyStringArrayList extends AbstractProtobufList<String>
   }
 
   @Override
+  @CanIgnoreReturnValue
   public boolean addAll(int index, Collection<? extends String> c) {
     ensureIsMutable();
     // When copying from another LazyStringList, directly copy the underlying
@@ -182,6 +185,7 @@ public class LazyStringArrayList extends AbstractProtobufList<String>
   }
 
   @Override
+  @CanIgnoreReturnValue
   public boolean addAllByteString(Collection<? extends ByteString> values) {
     ensureIsMutable();
     boolean ret = list.addAll(values);
@@ -190,6 +194,7 @@ public class LazyStringArrayList extends AbstractProtobufList<String>
   }
 
   @Override
+  @CanIgnoreReturnValue
   public boolean addAllByteArray(Collection<byte[]> c) {
     ensureIsMutable();
     boolean ret = list.addAll(c);
@@ -198,6 +203,7 @@ public class LazyStringArrayList extends AbstractProtobufList<String>
   }
 
   @Override
+  @CanIgnoreReturnValue
   public String remove(int index) {
     ensureIsMutable();
     Object o = list.remove(index);
@@ -210,6 +216,56 @@ public class LazyStringArrayList extends AbstractProtobufList<String>
     ensureIsMutable();
     list.clear();
     modCount++;
+  }
+
+  @Override
+  public boolean equals(
+          Object o) {
+    if (o == this) {
+      return true;
+    }
+    if (o instanceof LazyStringArrayList) {
+      LazyStringArrayList otherArray = (LazyStringArrayList) o;
+      int size = size();
+      if (size != otherArray.size()) {
+        return false;
+      }
+      // Note: This could be more efficient if we kept the two sides lazy when both are
+      // ByteStrings, but we cannot simply compare getByteString(i) because different invalid
+      // UTF-8 byte sequences can decode to identical Java Strings (with Unicode replacement
+      // characters \uFFFD). If we compared raw bytes, two lists could be unequal while lazy,
+      // but become equal after calling get(). To compare them lazily without decoding, we
+      // would need something like boolean equalsAsJavaLangString(ByteString a, ByteString b)
+      // in Utf8.java to retain that behavior.
+      for (int i = 0; i < size; i++) {
+        if (!get(i).equals(otherArray.get(i))) {
+          return false;
+        }
+      }
+      return true;
+    }
+    if (!(o instanceof List)) {
+      return false;
+    }
+    // Handle lists that do not support RandomAccess as efficiently as possible by using an iterator
+    // based approach in our super class. Otherwise our index based approach will avoid those
+    // allocations.
+    if (!(o instanceof RandomAccess)) {
+      return super.equals(o);
+    }
+
+    List<?> other = (List<?>) o;
+    int size = size();
+    if (size != other.size()) {
+      return false;
+    }
+
+    for (int i = 0; i < size; i++) {
+      if (!get(i).equals(other.get(i))) {
+        return false;
+      }
+    }
+    return true;
   }
 
   @Override
@@ -238,6 +294,7 @@ public class LazyStringArrayList extends AbstractProtobufList<String>
   }
 
   @Override
+  @CanIgnoreReturnValue
   public String set(int index, String s) {
     ensureIsMutable();
     Object o = list.set(index, s);
@@ -254,11 +311,13 @@ public class LazyStringArrayList extends AbstractProtobufList<String>
     setAndReturn(index, s);
   }
 
+  @CanIgnoreReturnValue
   private Object setAndReturn(int index, ByteString s) {
     ensureIsMutable();
     return list.set(index, s);
   }
 
+  @CanIgnoreReturnValue
   private Object setAndReturn(int index, byte[] s) {
     ensureIsMutable();
     return list.set(index, s);

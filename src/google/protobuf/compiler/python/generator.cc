@@ -44,6 +44,7 @@
 #include "absl/strings/substitute.h"
 #include "google/protobuf/compiler/code_generator.h"
 #include "google/protobuf/compiler/python/helpers.h"
+#include "google/protobuf/compiler/python/names.h"
 #include "google/protobuf/compiler/python/pyi_generator.h"
 #include "google/protobuf/compiler/retention.h"
 #include "google/protobuf/compiler/versions.h"
@@ -62,19 +63,6 @@ namespace compiler {
 namespace python {
 
 namespace {
-// Returns the alias we assign to the module of the given .proto filename
-// when importing. See testPackageInitializationImport in
-// third_party/py/google/protobuf/internal/reflection_test.py
-// to see why we need the alias.
-std::string ModuleAlias(absl::string_view filename) {
-  std::string module_name = ModuleName(filename);
-  // We can't have dots in the module name, so we replace each with _dot_.
-  // But that could lead to a collision between a.b and a_dot_b, so we also
-  // duplicate each underscore.
-  absl::StrReplaceAll({{"_", "__"}}, &module_name);
-  absl::StrReplaceAll({{".", "_dot_"}}, &module_name);
-  return module_name;
-}
 
 // Name of the class attribute where we store the Python
 // descriptor.Descriptor instance for the generated class.
@@ -182,7 +170,7 @@ std::string GetLegacySyntaxName(Edition edition) {
 
 Generator::Generator() : file_(nullptr) {}
 
-Generator::~Generator() {}
+Generator::~Generator() = default;
 
 GeneratorOptions Generator::ParseParameter(absl::string_view parameter,
                                            std::string* error) const {
@@ -243,7 +231,7 @@ bool Generator::Generate(const FileDescriptor* file,
   std::string filename = GetFileName(file, ".py");
 
   proto_ = StripSourceRetentionOptions(*file_);
-  proto_.SerializeToString(&file_descriptor_serialized_);
+  ABSL_CHECK(proto_.SerializeToString(&file_descriptor_serialized_));
 
   if (!opensource_runtime_ && GeneratingDescriptorProto()) {
     std::string bootstrap_filename =
@@ -311,7 +299,7 @@ bool Generator::Generate(const FileDescriptor* file,
   if (GeneratingDescriptorProto()) {
     printer_->Outdent();
   }
-  std::string module_name = ModuleName(file->name());
+  std::string module_name = ModuleName(file);
   if (!opensource_runtime_) {
     module_name =
         std::string(absl::StripPrefix(module_name, kThirdPartyPrefix));
@@ -341,6 +329,7 @@ bool Generator::Generate(const FileDescriptor* file,
   }
 
   printer.Print("# @@protoc_insertion_point(module_scope)\n");
+
 
   return !printer.failed();
 }
@@ -395,18 +384,21 @@ void Generator::PrintTopBoilerplate() const {
   printer_->Print("\n\n");
 }
 
+std::string Generator::ImportModuleName(const FileDescriptor* file) const {
+  std::string module_name = ModuleName(file);
+  if (!opensource_runtime_) {
+    module_name =
+        std::string(absl::StripPrefix(module_name, kThirdPartyPrefix));
+  }
+  return module_name;
+}
+
 // Prints Python imports for all modules imported by |file|.
 void Generator::PrintImports() const {
   bool has_importlib = false;
   for (int i = 0; i < file_->dependency_count(); ++i) {
-    absl::string_view filename = file_->dependency(i)->name();
-
-    std::string module_name = ModuleName(filename);
-    std::string module_alias = ModuleAlias(filename);
-    if (!opensource_runtime_) {
-      module_name =
-          std::string(absl::StripPrefix(module_name, kThirdPartyPrefix));
-    }
+    std::string module_name = ImportModuleName(file_->dependency(i));
+    std::string module_alias = ModuleAlias(file_->dependency(i));
     if (ContainsPythonKeyword(module_name)) {
       // If the module path contains a Python keyword, we have to quote the
       // module name and import it using importlib. Otherwise the usual kind of
@@ -440,11 +432,7 @@ void Generator::PrintImports() const {
 
   // Print public imports.
   for (int i = 0; i < file_->public_dependency_count(); ++i) {
-    std::string module_name = ModuleName(file_->public_dependency(i)->name());
-    if (!opensource_runtime_) {
-      module_name =
-          std::string(absl::StripPrefix(module_name, kThirdPartyPrefix));
-    }
+    std::string module_name = ImportModuleName(file_->public_dependency(i));
     printer_->Print("from $module$ import *\n", "module", module_name);
   }
   printer_->Print("\n");
@@ -464,11 +452,11 @@ std::string Generator::GetResolvedFeatures(
   ABSL_CHECK(feature_set != nullptr)
       << "Malformed descriptor.proto doesn't contain "
       << FeatureSet::GetDescriptor()->full_name();
-  auto message_factory = absl::make_unique<DynamicMessageFactory>();
+  auto message_factory = std::make_unique<DynamicMessageFactory>();
   auto features =
       absl::WrapUnique(message_factory->GetPrototype(feature_set)->New());
-  features->ParseFromString(
-      GetResolvedSourceFeatures(descriptor).SerializeAsString());
+  ABSL_CHECK(features->ParseFromString(
+      GetResolvedSourceFeatures(descriptor).SerializeAsString()));
 
   // Collect all of the resolved features.
   std::vector<std::string> feature_args;
@@ -598,7 +586,7 @@ void Generator::PrintFileDescriptor() const {
     if (file_->dependency_count() != 0) {
       printer_->Print(",\ndependencies=[");
       for (int i = 0; i < file_->dependency_count(); ++i) {
-        std::string module_alias = ModuleAlias(file_->dependency(i)->name());
+        std::string module_alias = ModuleAlias(file_->dependency(i));
         printer_->Print("$module_alias$.DESCRIPTOR,", "module_alias",
                         module_alias);
       }
@@ -607,8 +595,7 @@ void Generator::PrintFileDescriptor() const {
     if (file_->public_dependency_count() > 0) {
       printer_->Print(",\npublic_dependencies=[");
       for (int i = 0; i < file_->public_dependency_count(); ++i) {
-        std::string module_alias =
-            ModuleAlias(file_->public_dependency(i)->name());
+        std::string module_alias = ModuleAlias(file_->public_dependency(i));
         printer_->Print("$module_alias$.DESCRIPTOR,", "module_alias",
                         module_alias);
       }
@@ -666,7 +653,7 @@ void Generator::PrintEnum(const EnumDescriptor& enum_descriptor,
       "  create_key=_descriptor._internal_create_key,\n"
       "  values=[\n";
   std::string options_string;
-  proto.options().SerializeToString(&options_string);
+  ABSL_CHECK(proto.options().SerializeToString(&options_string));
   printer_->Print(m, enum_descriptor_template);
   printer_->Indent();
   printer_->Indent();
@@ -681,7 +668,6 @@ void Generator::PrintEnum(const EnumDescriptor& enum_descriptor,
   printer_->Print("containing_type=None,\n");
   printer_->Print("serialized_options=$options_value$,\n", "options_value",
                   OptionsValue(options_string));
-  EnumDescriptorProto edp;
   printer_->Outdent();
   printer_->Print(")\n");
   printer_->Print("_sym_db.RegisterEnumDescriptor($name$)\n", "name",
@@ -739,7 +725,7 @@ void Generator::PrintDescriptorKeyAndModuleName(
   std::string name = ModuleLevelServiceDescriptorName(descriptor);
   printer_->Print("$descriptor_key$ = $descriptor_name$,\n", "descriptor_key",
                   kDescriptorKey, "descriptor_name", name);
-  std::string module_name = ModuleName(file_->name());
+  std::string module_name = ModuleName(file_);
   if (!opensource_runtime_) {
     module_name =
         std::string(absl::StripPrefix(module_name, kThirdPartyPrefix));
@@ -822,7 +808,7 @@ void Generator::PrintDescriptor(const Descriptor& message_descriptor,
   printer_->Outdent();
   printer_->Print("],\n");
   std::string options_string;
-  proto.options().SerializeToString(&options_string);
+  ABSL_CHECK(proto.options().SerializeToString(&options_string));
   printer_->Print(
       "serialized_options=$options_value$,\n"
       "is_extendable=$extendable$",
@@ -935,7 +921,7 @@ void Generator::PrintMessage(const Descriptor& message_descriptor,
   m["descriptor_key"] = kDescriptorKey;
   m["descriptor_name"] = ModuleLevelDescriptorName(message_descriptor);
   printer_->Print(m, "'$descriptor_key$' : $descriptor_name$,\n");
-  std::string module_name = ModuleName(file_->name());
+  std::string module_name = ModuleName(file_);
   if (!opensource_runtime_) {
     module_name =
         std::string(absl::StripPrefix(module_name, kThirdPartyPrefix));
@@ -1150,7 +1136,7 @@ void Generator::PrintEnumValueDescriptor(
   // TODO: Fix up EnumValueDescriptor "type" fields.
   // More circular references.  ::sigh::
   std::string options_string;
-  proto.options().SerializeToString(&options_string);
+  ABSL_CHECK(proto.options().SerializeToString(&options_string));
   absl::flat_hash_map<absl::string_view, std::string> m;
   m["name"] = std::string(descriptor.name());
   m["index"] = absl::StrCat(descriptor.index());
@@ -1168,7 +1154,7 @@ void Generator::PrintEnumValueDescriptor(
 void Generator::PrintFieldDescriptor(const FieldDescriptor& field,
                                      const FieldDescriptorProto& proto) const {
   std::string options_string;
-  proto.options().SerializeToString(&options_string);
+  ABSL_CHECK(proto.options().SerializeToString(&options_string));
   absl::flat_hash_map<absl::string_view, std::string> m;
   m["name"] = std::string(field.name());
   m["full_name"] = std::string(field.full_name());
@@ -1273,7 +1259,7 @@ std::string Generator::ModuleLevelDescriptorName(
   // We now have the name relative to its own module.  Also qualify with
   // the module name iff this descriptor is from a different .proto file.
   if (descriptor.file() != file_) {
-    name = absl::StrCat(ModuleAlias(descriptor.file()->name()), ".", name);
+    name = absl::StrCat(ModuleAlias(descriptor.file()), ".", name);
   }
   return name;
 }
@@ -1286,7 +1272,7 @@ std::string Generator::ModuleLevelMessageName(
     const Descriptor& descriptor) const {
   std::string name = NamePrefixedWithNestedTypes(descriptor, ".");
   if (descriptor.file() != file_) {
-    name = absl::StrCat(ModuleAlias(descriptor.file()->name()), ".", name);
+    name = absl::StrCat(ModuleAlias(descriptor.file()), ".", name);
   }
   return name;
 }
@@ -1298,7 +1284,7 @@ std::string Generator::ModuleLevelServiceDescriptorName(
   std::string name = absl::StrCat("_", descriptor.name());
   absl::AsciiStrToUpper(&name);
   if (descriptor.file() != file_) {
-    name = absl::StrCat(ModuleAlias(descriptor.file()->name()), ".", name);
+    name = absl::StrCat(ModuleAlias(descriptor.file()), ".", name);
   }
   return name;
 }
@@ -1313,7 +1299,7 @@ template <typename DescriptorProtoT>
 void Generator::PrintSerializedPbInterval(
     const DescriptorProtoT& descriptor_proto, absl::string_view name) const {
   std::string sp;
-  descriptor_proto.SerializeToString(&sp);
+  ABSL_CHECK(descriptor_proto.SerializeToString(&sp));
   size_t offset = file_descriptor_serialized_.find(sp);
   ABSL_CHECK_GE(offset, 0);
 
@@ -1519,8 +1505,8 @@ void Generator::FixOptionsForMessage(const Descriptor& descriptor,
 void Generator::CopyPublicDependenciesAliases(
     absl::string_view copy_from, const FileDescriptor* file) const {
   for (int i = 0; i < file->public_dependency_count(); ++i) {
-    std::string module_name = ModuleName(file->public_dependency(i)->name());
-    std::string module_alias = ModuleAlias(file->public_dependency(i)->name());
+    std::string module_name = ModuleName(file->public_dependency(i));
+    std::string module_alias = ModuleAlias(file->public_dependency(i));
     // There's no module alias in the dependent file if it was generated by
     // an old protoc (less than 3.0.0-alpha-1). Use module name in this
     // situation.

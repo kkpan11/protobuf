@@ -15,22 +15,29 @@ rust_library(
         "arena.rs",
         "associated_mini_table.rs",
         "lib.rs",
-        "mini_table.rs",
+        "message.rs",
         "owned_arena_box.rs",
         "text.rs",
         "wire.rs",
+    ],
+    edition = "2024",
+    proc_macro_deps = [
+        "@crate_index//:paste",
     ],
     rustc_flags = ["--cfg=bzl"],
     visibility = [
         "//rust:__subpackages__",
         "//src/google/protobuf:__subpackages__",
     ],
-    deps = ["//rust/upb/sys"],
+    deps = [
+        "//rust/upb/sys",
+    ],
 )
 
 rust_test(
     name = "upb_rs_crate_test",
     crate = ":upb",
+    edition = "2024",
     rustc_flags = ["--cfg=bzl"],
     deps = [
         "@crate_index//:googletest",

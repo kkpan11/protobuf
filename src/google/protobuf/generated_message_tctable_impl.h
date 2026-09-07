@@ -15,7 +15,9 @@
 #include <type_traits>
 
 #include "absl/base/optimization.h"
+#include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
+#include "absl/status/status.h"
 #include "absl/strings/cord.h"
 #include "absl/strings/string_view.h"
 #include "google/protobuf/extension_set.h"
@@ -43,9 +45,8 @@ class UnknownFieldSet;
 namespace internal {
 
 enum {
-  kInlinedStringAuxIdx = 0,
-  kSplitOffsetAuxIdx = 1,
-  kSplitSizeAuxIdx = 2,
+  kSplitOffsetAuxIdx = 0,
+  kSplitSizeAuxIdx = 1,
 };
 
 // Field layout enums.
@@ -153,13 +154,11 @@ enum TransformValidation : uint16_t {
   kTvEnum      = 2 << kTvShift,  // validate using ValidateEnum()
   kTvRange     = 3 << kTvShift,  // validate using FieldAux::enum_range
   // String fields:
-  kTvUtf8Debug = 1 << kTvShift,  // proto2
   kTvUtf8      = 2 << kTvShift,  // proto3
 
   // Message fields:
-  kTvDefault   = 1 << kTvShift,  // Aux has default_instance*
-  kTvTable     = 2 << kTvShift,  // Aux has TcParseTableBase*
-  kTvWeakPtr   = 3 << kTvShift,  // Aux has default_instance** (for weak)
+  kTvClassData = 1 << kTvShift,  // Aux has ClassData*
+  kTvWeakPtr   = 2 << kTvShift,  // Aux has default_instance** (for weak)
 
   // Lazy message fields:
   kTvEager     = 1 << kTvShift,
@@ -240,7 +239,6 @@ enum FieldType : uint16_t {
 
   // String types:
   kBytes           = 0 | kFkString | kFmtArray,
-  kRawString       = 0 | kFkString | kFmtUtf8  | kTvUtf8Debug,
   kUtf8String      = 0 | kFkString | kFmtUtf8  | kTvUtf8,
 
   // Message types:
@@ -331,7 +329,7 @@ inline void AlignFail(std::integral_constant<size_t, 1>,
 //    2: two byte encoded tag
 //
 // Examples:
-//   FastV8S1, FastZ64S2, FastEr1P2, FastBcS1, FastMtR2, FastEndG1
+//   FastV8S1, FastZ64S2, FastEr1P2, FastBcS1, FastMcR2, FastEndG1
 //
 #define PROTOBUF_TC_PARSE_FUNCTION_LIST                           \
   /* These functions have the Fast entry ABI */                   \
@@ -347,31 +345,29 @@ inline void AlignFail(std::integral_constant<size_t, 1>,
   PROTOBUF_TC_PARSE_FUNCTION_LIST_PACKED(FastEr0)                 \
   PROTOBUF_TC_PARSE_FUNCTION_LIST_PACKED(FastEr1)                 \
   PROTOBUF_TC_PARSE_FUNCTION_LIST_REPEATED(FastB)                 \
-  PROTOBUF_TC_PARSE_FUNCTION_LIST_REPEATED(FastS)                 \
   PROTOBUF_TC_PARSE_FUNCTION_LIST_REPEATED(FastU)                 \
   PROTOBUF_TC_PARSE_FUNCTION_LIST_SINGLE(FastBi)                  \
-  PROTOBUF_TC_PARSE_FUNCTION_LIST_SINGLE(FastSi)                  \
   PROTOBUF_TC_PARSE_FUNCTION_LIST_SINGLE(FastUi)                  \
-  PROTOBUF_TC_PARSE_FUNCTION_LIST_SINGLE(FastBc)                  \
-  PROTOBUF_TC_PARSE_FUNCTION_LIST_SINGLE(FastSc)                  \
-  PROTOBUF_TC_PARSE_FUNCTION_LIST_SINGLE(FastUc)                  \
+  PROTOBUF_TC_PARSE_FUNCTION_LIST_REPEATED(FastBc)                \
+  PROTOBUF_TC_PARSE_FUNCTION_LIST_REPEATED(FastUc)                \
   PROTOBUF_TC_PARSE_FUNCTION_LIST_SINGLE(FastBm)                  \
-  PROTOBUF_TC_PARSE_FUNCTION_LIST_SINGLE(FastSm)                  \
   PROTOBUF_TC_PARSE_FUNCTION_LIST_SINGLE(FastUm)                  \
-  PROTOBUF_TC_PARSE_FUNCTION_LIST_REPEATED(FastGd)                \
-  PROTOBUF_TC_PARSE_FUNCTION_LIST_REPEATED(FastGt)                \
-  PROTOBUF_TC_PARSE_FUNCTION_LIST_REPEATED(FastMd)                \
-  PROTOBUF_TC_PARSE_FUNCTION_LIST_REPEATED(FastMt)                \
+  PROTOBUF_TC_PARSE_FUNCTION_LIST_REPEATED(FastGc)                \
+  PROTOBUF_TC_PARSE_FUNCTION_LIST_REPEATED(FastMc)                \
   PROTOBUF_TC_PARSE_FUNCTION_LIST_SINGLE(FastMl)                  \
   PROTOBUF_TC_PARSE_FUNCTION_LIST_END_GROUP()                     \
   PROTOBUF_TC_PARSE_FUNCTION_X(MessageSetWireFormatParseLoopLite) \
   PROTOBUF_TC_PARSE_FUNCTION_X(MessageSetWireFormatParseLoop)     \
   PROTOBUF_TC_PARSE_FUNCTION_X(ReflectionParseLoop)               \
+  /* These functions have the FastMp function ABI */              \
+  PROTOBUF_TC_PARSE_FUNCTION_X(FastMiniParse1)                    \
+  PROTOBUF_TC_PARSE_FUNCTION_X(FastMiniParse2)                    \
   /* These functions have the fallback ABI */                     \
   PROTOBUF_TC_PARSE_FUNCTION_X(GenericFallback)                   \
   PROTOBUF_TC_PARSE_FUNCTION_X(GenericFallbackLite)               \
   PROTOBUF_TC_PARSE_FUNCTION_X(ReflectionFallback)                \
-  PROTOBUF_TC_PARSE_FUNCTION_X(DiscardEverythingFallback)
+  PROTOBUF_TC_PARSE_FUNCTION_X(DiscardEverythingFallback)         \
+  PROTOBUF_TC_PARSE_FUNCTION_X(MpUnknownFields)
 
 #define PROTOBUF_TC_PARSE_FUNCTION_X(value) k##value,
 enum class TcParseFunction : uint8_t { kNone, PROTOBUF_TC_PARSE_FUNCTION_LIST };
@@ -380,11 +376,6 @@ enum class TcParseFunction : uint8_t { kNone, PROTOBUF_TC_PARSE_FUNCTION_LIST };
 // TcParser implements most of the parsing logic for tailcall tables.
 class PROTOBUF_EXPORT TcParser final {
  public:
-  template <typename T>
-  static constexpr auto GetTable() -> decltype(&T::_table_.header) {
-    return &T::_table_.header;
-  }
-
   static PROTOBUF_ALWAYS_INLINE const char* ParseMessage(
       MessageLite* msg, const char* ptr, ParseContext* ctx,
       const TcParseTableBase* tc_table) {
@@ -428,6 +419,8 @@ class PROTOBUF_EXPORT TcParser final {
   // even when this is enabled.
   PROTOBUF_CC static const char* DiscardEverythingFallback(
       PROTOBUF_TC_PARAM_DECL);
+  // Fallback handler for parsing unknown fields directly.
+  PROTOBUF_CC static const char* MpUnknownFields(PROTOBUF_TC_PARAM_DECL);
 
   // These follow the "fast" function ABI but implement the whole loop for
   // message_set_wire_format types.
@@ -612,7 +605,7 @@ class PROTOBUF_EXPORT TcParser final {
       PROTOBUF_TC_PARAM_DECL);
 
   // Functions referenced by generated fast tables (string types):
-  //   B: bytes      S: string     U: UTF-8 string
+  //   B: bytes      U: UTF-8 string
   //   (empty): ArenaStringPtr   i: InlinedString   c: Cord   m: MicroString
   //   S: singular   R: repeated
   //   1/2: tag length (bytes)
@@ -623,14 +616,6 @@ class PROTOBUF_EXPORT TcParser final {
   PROTOBUF_NOINLINE PROTOBUF_CC static const char* FastBR1(
       PROTOBUF_TC_PARAM_DECL);
   PROTOBUF_NOINLINE PROTOBUF_CC static const char* FastBR2(
-      PROTOBUF_TC_PARAM_DECL);
-  PROTOBUF_NOINLINE PROTOBUF_CC static const char* FastSS1(
-      PROTOBUF_TC_PARAM_DECL);
-  PROTOBUF_NOINLINE PROTOBUF_CC static const char* FastSS2(
-      PROTOBUF_TC_PARAM_DECL);
-  PROTOBUF_NOINLINE PROTOBUF_CC static const char* FastSR1(
-      PROTOBUF_TC_PARAM_DECL);
-  PROTOBUF_NOINLINE PROTOBUF_CC static const char* FastSR2(
       PROTOBUF_TC_PARAM_DECL);
   PROTOBUF_NOINLINE PROTOBUF_CC static const char* FastUS1(
       PROTOBUF_TC_PARAM_DECL);
@@ -645,10 +630,6 @@ class PROTOBUF_EXPORT TcParser final {
       PROTOBUF_TC_PARAM_DECL);
   PROTOBUF_NOINLINE PROTOBUF_CC static const char* FastBiS2(
       PROTOBUF_TC_PARAM_DECL);
-  PROTOBUF_NOINLINE PROTOBUF_CC static const char* FastSiS1(
-      PROTOBUF_TC_PARAM_DECL);
-  PROTOBUF_NOINLINE PROTOBUF_CC static const char* FastSiS2(
-      PROTOBUF_TC_PARAM_DECL);
   PROTOBUF_NOINLINE PROTOBUF_CC static const char* FastUiS1(
       PROTOBUF_TC_PARAM_DECL);
   PROTOBUF_NOINLINE PROTOBUF_CC static const char* FastUiS2(
@@ -658,22 +639,23 @@ class PROTOBUF_EXPORT TcParser final {
       PROTOBUF_TC_PARAM_DECL);
   PROTOBUF_NOINLINE PROTOBUF_CC static const char* FastBcS2(
       PROTOBUF_TC_PARAM_DECL);
-  PROTOBUF_NOINLINE PROTOBUF_CC static const char* FastScS1(
-      PROTOBUF_TC_PARAM_DECL);
-  PROTOBUF_NOINLINE PROTOBUF_CC static const char* FastScS2(
-      PROTOBUF_TC_PARAM_DECL);
   PROTOBUF_NOINLINE PROTOBUF_CC static const char* FastUcS1(
       PROTOBUF_TC_PARAM_DECL);
   PROTOBUF_NOINLINE PROTOBUF_CC static const char* FastUcS2(
       PROTOBUF_TC_PARAM_DECL);
 
+  PROTOBUF_NOINLINE PROTOBUF_CC static const char* FastBcR1(
+      PROTOBUF_TC_PARAM_DECL);
+  PROTOBUF_NOINLINE PROTOBUF_CC static const char* FastBcR2(
+      PROTOBUF_TC_PARAM_DECL);
+  PROTOBUF_NOINLINE PROTOBUF_CC static const char* FastUcR1(
+      PROTOBUF_TC_PARAM_DECL);
+  PROTOBUF_NOINLINE PROTOBUF_CC static const char* FastUcR2(
+      PROTOBUF_TC_PARAM_DECL);
+
   PROTOBUF_NOINLINE PROTOBUF_CC static const char* FastBmS1(
       PROTOBUF_TC_PARAM_DECL);
   PROTOBUF_NOINLINE PROTOBUF_CC static const char* FastBmS2(
-      PROTOBUF_TC_PARAM_DECL);
-  PROTOBUF_NOINLINE PROTOBUF_CC static const char* FastSmS1(
-      PROTOBUF_TC_PARAM_DECL);
-  PROTOBUF_NOINLINE PROTOBUF_CC static const char* FastSmS2(
       PROTOBUF_TC_PARAM_DECL);
   PROTOBUF_NOINLINE PROTOBUF_CC static const char* FastUmS1(
       PROTOBUF_TC_PARAM_DECL);
@@ -685,38 +667,22 @@ class PROTOBUF_EXPORT TcParser final {
   //   d: default*   t: TcParseTable* (the contents of aux)  l: lazy
   //   S: singular   R: repeated
   //   1/2: tag length (bytes)
-  PROTOBUF_NOINLINE PROTOBUF_CC static const char* FastMdS1(
+  PROTOBUF_NOINLINE PROTOBUF_CC static const char* FastMcS1(
       PROTOBUF_TC_PARAM_DECL);
-  PROTOBUF_NOINLINE PROTOBUF_CC static const char* FastMdS2(
+  PROTOBUF_NOINLINE PROTOBUF_CC static const char* FastMcS2(
       PROTOBUF_TC_PARAM_DECL);
-  PROTOBUF_NOINLINE PROTOBUF_CC static const char* FastGdS1(
+  PROTOBUF_NOINLINE PROTOBUF_CC static const char* FastGcS1(
       PROTOBUF_TC_PARAM_DECL);
-  PROTOBUF_NOINLINE PROTOBUF_CC static const char* FastGdS2(
-      PROTOBUF_TC_PARAM_DECL);
-  PROTOBUF_NOINLINE PROTOBUF_CC static const char* FastMtS1(
-      PROTOBUF_TC_PARAM_DECL);
-  PROTOBUF_NOINLINE PROTOBUF_CC static const char* FastMtS2(
-      PROTOBUF_TC_PARAM_DECL);
-  PROTOBUF_NOINLINE PROTOBUF_CC static const char* FastGtS1(
-      PROTOBUF_TC_PARAM_DECL);
-  PROTOBUF_NOINLINE PROTOBUF_CC static const char* FastGtS2(
+  PROTOBUF_NOINLINE PROTOBUF_CC static const char* FastGcS2(
       PROTOBUF_TC_PARAM_DECL);
 
-  PROTOBUF_NOINLINE PROTOBUF_CC static const char* FastMdR1(
+  PROTOBUF_NOINLINE PROTOBUF_CC static const char* FastMcR1(
       PROTOBUF_TC_PARAM_DECL);
-  PROTOBUF_NOINLINE PROTOBUF_CC static const char* FastMdR2(
+  PROTOBUF_NOINLINE PROTOBUF_CC static const char* FastMcR2(
       PROTOBUF_TC_PARAM_DECL);
-  PROTOBUF_NOINLINE PROTOBUF_CC static const char* FastGdR1(
+  PROTOBUF_NOINLINE PROTOBUF_CC static const char* FastGcR1(
       PROTOBUF_TC_PARAM_DECL);
-  PROTOBUF_NOINLINE PROTOBUF_CC static const char* FastGdR2(
-      PROTOBUF_TC_PARAM_DECL);
-  PROTOBUF_NOINLINE PROTOBUF_CC static const char* FastMtR1(
-      PROTOBUF_TC_PARAM_DECL);
-  PROTOBUF_NOINLINE PROTOBUF_CC static const char* FastMtR2(
-      PROTOBUF_TC_PARAM_DECL);
-  PROTOBUF_NOINLINE PROTOBUF_CC static const char* FastGtR1(
-      PROTOBUF_TC_PARAM_DECL);
-  PROTOBUF_NOINLINE PROTOBUF_CC static const char* FastGtR2(
+  PROTOBUF_NOINLINE PROTOBUF_CC static const char* FastGcR2(
       PROTOBUF_TC_PARAM_DECL);
 
   PROTOBUF_NOINLINE PROTOBUF_CC static const char* FastMlS1(
@@ -758,11 +724,32 @@ class PROTOBUF_EXPORT TcParser final {
     return *target;
   }
 
-  static const TcParseTableBase* GetTableFromAux(
-      uint16_t type_card, TcParseTableBase::FieldAux aux);
-  static MessageLite* NewMessage(const TcParseTableBase* table, Arena* arena);
-  static MessageLite* AddMessage(const TcParseTableBase* table,
-                                 RepeatedPtrFieldBase& field);
+  static MessageLite* NewMessage(const ClassData* class_data, Arena* arena);
+  static MessageLite* AddMessage(const ClassData* class_data,
+                                 RepeatedPtrFieldBase& field, Arena* arena);
+
+  template <typename T>
+  static inline const T& GetFieldAtMaybeSplit(const void* x, size_t offset,
+                                              const MessageLite* msg,
+                                              bool is_split) {
+    if (ABSL_PREDICT_TRUE(!is_split)) return RefAt<const T>(x, offset);
+    return *RefAt<const T*>(x, offset);
+  }
+
+  template <typename T>
+  static inline const T& GetRepeatedFieldAt(const void* x, size_t offset,
+                                            const MessageLite* msg,
+                                            bool is_split) {
+    return GetFieldAtMaybeSplit<T>(x, offset, msg, is_split);
+  }
+
+  static inline const UntypedMapBase& GetMapFieldAt(const void* x,
+                                                    size_t offset,
+                                                    const MessageLite* msg) {
+    return GetFieldAtMaybeSplit<MapFieldBaseForParse>(x, offset, msg,
+                                                      /*is_split=*/false)
+        .GetMap();
+  }
 
   template <typename T, bool is_split>
   static inline T& MaybeCreateRepeatedRefAt(void* x, size_t offset,
@@ -812,9 +799,15 @@ class PROTOBUF_EXPORT TcParser final {
   PROTOBUF_NOINLINE PROTOBUF_CC static const char* FastEndG2(
       PROTOBUF_TC_PARAM_DECL);
 
+  // "Fast" mini parsing.
+  // We have one for 1 and 2 byte tags.
+  PROTOBUF_NOINLINE PROTOBUF_CC static const char* FastMiniParse1(
+      PROTOBUF_TC_PARAM_DECL);
+  PROTOBUF_NOINLINE PROTOBUF_CC static const char* FastMiniParse2(
+      PROTOBUF_TC_PARAM_DECL);
+
   // For `map` mini parsing generate a type card for the key/value.
   static constexpr MapAuxInfo GetMapAuxInfo(bool fail_on_utf8_failure,
-                                            bool log_debug_utf8_failure,
                                             bool validated_enum_value,
                                             int key_type, int value_type,
                                             bool is_lite) {
@@ -824,15 +817,36 @@ class PROTOBUF_EXPORT TcParser final {
         true,
         is_lite,
         fail_on_utf8_failure,
-        log_debug_utf8_failure,
         validated_enum_value,
     };
   }
 
-  static void VerifyHasBitConsistency(const MessageLite* msg,
-                                      const TcParseTableBase* table);
+  static absl::Status VerifyHasBitConsistency(const MessageLite* msg,
+                                              const TcParseTableBase* table);
+
+  // Test-only function to verify that all hasbits are set correctly in the
+  // message.
+  static void CheckHasBitConsistency(const MessageLite* msg,
+                                     const TcParseTableBase* table);
+
+  static constexpr uint16_t kMiniParseTableTypeCardMask =
+      +field_layout::kSplitMask | field_layout::kFkMask;
 
  private:
+  static const TailCallParseFunc kMiniParseTable[];
+  static const size_t kMiniParseTableSize;
+
+  // Returns true if the repeated field is empty. This method is not
+  // well-optimized, so it should only be called in debug builds.
+  static bool RepeatedFieldIsEmptySlow(
+      const MessageLite* msg, const TcParseTableBase* table,
+      const TcParseTableBase::FieldEntry& entry, const void* base,
+      bool is_split);
+
+  template <typename TagTaype>
+  PROTOBUF_ALWAYS_INLINE PROTOBUF_CC static const char* FastMpImpl(
+      PROTOBUF_TC_PARAM_DECL);
+
   // Optimized small tag varint parser for int32/int64
   template <typename FieldType>
   PROTOBUF_CC static const char* FastVarintS1(PROTOBUF_TC_PARAM_DECL);
@@ -854,10 +868,10 @@ class PROTOBUF_EXPORT TcParser final {
   template <bool export_called_function>
   PROTOBUF_CC static const char* MiniParse(PROTOBUF_TC_PARAM_DECL);
 
-  template <typename TagType, bool group_coding, bool aux_is_table>
+  template <typename TagType, bool group_coding>
   PROTOBUF_CC static inline const char* SingularParseMessageAuxImpl(
       PROTOBUF_TC_PARAM_DECL);
-  template <typename TagType, bool group_coding, bool aux_is_table>
+  template <typename TagType, bool group_coding>
   PROTOBUF_CC static inline const char* RepeatedParseMessageAuxImpl(
       PROTOBUF_TC_PARAM_DECL);
   template <typename TagType>
@@ -869,11 +883,22 @@ class PROTOBUF_EXPORT TcParser final {
   static PROTOBUF_ALWAYS_INLINE void SyncHasbits(
       MessageLite* msg, uint64_t hasbits, const TcParseTableBase* table) {
     const uint32_t has_bits_offset = table->has_bits_offset;
-    if (has_bits_offset) {
-      // Only the first 32 has-bits are updated. Nothing above those is stored,
-      // but e.g. messages without has-bits update the upper bits.
-      RefAt<uint32_t>(msg, has_bits_offset) |= static_cast<uint32_t>(hasbits);
+    if constexpr (internal::PerformDebugChecks()) {
+      // We always have some offset to write to.
+      ABSL_DCHECK_NE(has_bits_offset, 0u);
+      // and if we actually have has bits to push, we should be pushing to a
+      // real HasBits.
+      // `has_bits_offset` points to `_cached_size_` when we have
+      // no has bits, just to point somewhere and avoid a branch here.
+      // In that case we would be doing `|= 0` so the target just need to be
+      // some valid space in the message.
+      if (static_cast<uint32_t>(hasbits) != 0) {
+        ABSL_DCHECK_NE(has_bits_offset, table->class_data->cached_size_offset);
+      }
     }
+    // Only the first 32 has-bits are updated. Nothing above those is stored,
+    // but e.g. messages without has-bits update the upper bits.
+    RefAt<uint32_t>(msg, has_bits_offset) |= static_cast<uint32_t>(hasbits);
   }
 
   PROTOBUF_CC static const char* TagDispatch(PROTOBUF_TC_PARAM_NO_DATA_DECL);
@@ -889,39 +914,16 @@ class PROTOBUF_EXPORT TcParser final {
 
   class ScopedArenaSwap;
 
-  struct UnknownFieldOps {
-    void (*write_varint)(MessageLite* msg, int number, int value);
-    void (*write_length_delimited)(MessageLite* msg, int number,
-                                   absl::string_view value);
-  };
+  static void WriteVarintToUnknown(MessageLite* msg,
+                                   const ClassData* class_data, int number,
+                                   int value);
+  static void WriteLengthDelimitedToUnknown(MessageLite* msg,
+                                            const ClassData* class_data,
+                                            int number,
+                                            absl::string_view value);
 
-  static const UnknownFieldOps& GetUnknownFieldOps(
-      const TcParseTableBase* table);
-
-  template <typename UnknownFieldsT>
-  static void WriteVarintToUnknown(MessageLite* msg, int number, int value) {
-    internal::WriteVarint(
-        number, value,
-        msg->_internal_metadata_.mutable_unknown_fields<UnknownFieldsT>());
-  }
-  template <typename UnknownFieldsT>
-  static void WriteLengthDelimitedToUnknown(MessageLite* msg, int number,
-                                            absl::string_view value) {
-    internal::WriteLengthDelimited(
-        number, value,
-        msg->_internal_metadata_.mutable_unknown_fields<UnknownFieldsT>());
-  }
-
-  template <class MessageBaseT, class UnknownFieldsT>
+  template <class MessageBaseT>
   PROTOBUF_CC static const char* GenericFallbackImpl(PROTOBUF_TC_PARAM_DECL) {
-    if (ABSL_PREDICT_FALSE(ptr == nullptr)) {
-      // This is the ABI used by GetUnknownFieldOps(). Return the vtable.
-      static constexpr UnknownFieldOps kOps = {
-          WriteVarintToUnknown<UnknownFieldsT>,
-          WriteLengthDelimitedToUnknown<UnknownFieldsT>};
-      return reinterpret_cast<const char*>(&kOps);
-    }
-
     SyncHasbits(msg, hasbits, table);
     uint32_t tag = data.tag();
     if ((tag & 7) == WireFormatLite::WIRETYPE_END_GROUP || tag == 0) {
@@ -929,22 +931,11 @@ class PROTOBUF_EXPORT TcParser final {
       return ptr;
     }
 
-    if (table->extension_offset != 0) {
-      // We don't need to check the extension ranges. If it is not an extension
-      // it will be handled just like if it was an unknown extension: sent to
-      // the unknown field set.
-      return RefAt<ExtensionSet>(msg, table->extension_offset)
-          .ParseField(
-              tag, ptr,
-              static_cast<const MessageBaseT*>(table->default_instance()),
-              &msg->_internal_metadata_, ctx);
-    } else {
-      // Otherwise, we directly put it on the unknown field set.
-      return UnknownFieldParse(
-          tag,
-          msg->_internal_metadata_.mutable_unknown_fields<UnknownFieldsT>(),
-          ptr, ctx);
-    }
+    ABSL_DCHECK(table->extension_offset != 0);
+    return RefAt<ExtensionSet>(msg, table->extension_offset)
+        .ParseField(tag, ptr,
+                    static_cast<const MessageBaseT*>(table->default_instance()),
+                    &msg->_internal_metadata_, ctx);
   }
 
   template <class MessageBaseT>
@@ -998,15 +989,17 @@ class PROTOBUF_EXPORT TcParser final {
       PROTOBUF_TC_PARAM_DECL);
 
   // Implementations for fast string field parsing functions:
-  enum Utf8Type { kNoUtf8 = 0, kUtf8 = 1, kUtf8ValidateOnly = 2 };
+  enum Utf8Type { kNoUtf8 = 0, kUtf8 = 1 };
   template <typename TagType, typename FieldType, Utf8Type utf8>
   PROTOBUF_CC static inline const char* SingularString(PROTOBUF_TC_PARAM_DECL);
   template <typename TagType, typename FieldType, Utf8Type utf8>
   PROTOBUF_CC static inline const char* RepeatedString(PROTOBUF_TC_PARAM_DECL);
+  template <typename TagType, Utf8Type utf8>
+  PROTOBUF_CC static inline const char* RepeatedCord(PROTOBUF_TC_PARAM_DECL);
 
   static inline const char* ParseRepeatedStringOnce(
-      const char* ptr, SerialArena* serial_arena, ParseContext* ctx,
-      RepeatedPtrField<std::string>& field);
+      const char* ptr, Arena* arena, SerialArena* serial_arena,
+      ParseContext* ctx, RepeatedPtrField<std::string>& field);
 
   PROTOBUF_NOINLINE
   static void AddUnknownEnum(MessageLite* msg, const TcParseTableBase* table,
@@ -1014,8 +1007,9 @@ class PROTOBUF_EXPORT TcParser final {
 
   static void WriteMapEntryAsUnknown(MessageLite* msg,
                                      const TcParseTableBase* table,
-                                     UntypedMapBase& map, uint32_t tag,
-                                     NodeBase* node, MapAuxInfo map_info);
+                                     UntypedMapBase& map, Arena* arena,
+                                     uint32_t tag, NodeBase* node,
+                                     MapAuxInfo map_info);
 
   static const char* ParseOneMapEntry(NodeBase* node, const char* ptr,
                                       ParseContext* ctx,
@@ -1033,11 +1027,11 @@ class PROTOBUF_EXPORT TcParser final {
   static int FieldNumber(const TcParseTableBase* table,
                          const TcParseTableBase::FieldEntry*);
   static void InitOneof(const TcParseTableBase* table,
-                        const TcParseTableBase* inner_table,
+                        const ClassData* class_data,
                         const TcParseTableBase::FieldEntry& entry,
                         MessageLite* msg);
   static void ChangeOneof(const TcParseTableBase* table,
-                          const TcParseTableBase* inner_table,
+                          const ClassData* class_data,
                           const TcParseTableBase::FieldEntry& entry,
                           uint32_t field_num, ParseContext* ctx,
                           MessageLite* msg);
@@ -1163,7 +1157,7 @@ PROTOBUF_ALWAYS_INLINE const char* TcParser::ParseLoop(
     return table->post_loop_handler(msg, ptr, ctx);
   }
   if (ABSL_PREDICT_FALSE(PerformDebugChecks() && ptr == nullptr)) {
-    VerifyHasBitConsistency(msg, table);
+    CheckHasBitConsistency(msg, table);
   }
   return ptr;
 }

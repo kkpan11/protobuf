@@ -5,6 +5,8 @@
 // license that can be found in the LICENSE file or at
 // https://developers.google.com/open-source/licenses/bsd
 
+#include "google/protobuf/map_field.h"
+
 #include <cstdint>
 #include <memory>
 
@@ -15,6 +17,7 @@
 #include "absl/strings/str_format.h"
 #include "absl/synchronization/barrier.h"
 #include "absl/synchronization/blocking_counter.h"
+#include "absl/types/optional.h"
 #include "google/protobuf/arena.h"
 #include "google/protobuf/arena_test_util.h"
 #include "google/protobuf/map.h"
@@ -24,6 +27,7 @@
 #include "google/protobuf/repeated_field.h"
 #include "google/protobuf/unittest.pb.h"
 #include "google/protobuf/wire_format_lite.h"
+
 
 // Must be included last.
 #include "google/protobuf/port_def.inc"
@@ -43,17 +47,15 @@ struct MapFieldTestPeer {
   }
 };
 
-using TestMapField = ::google::protobuf::internal::MapField<
-    proto2_unittest::TestMap_MapInt32Int32Entry_DoNotUse, ::int32_t, ::int32_t,
-    ::google::protobuf::internal::WireFormatLite::TYPE_INT32,
-    ::google::protobuf::internal::WireFormatLite::TYPE_INT32>;
+constexpr const auto* kEntryGlobals =
+    &proto2_unittest::TestMap_MapInt32Int32Entry_DoNotUse_globals_;
+
+using TestMapField =
+    ::google::protobuf::internal::MapField<kEntryGlobals, ::int32_t, ::int32_t>;
 
 class MapFieldBasePrimitiveTest : public testing::TestWithParam<bool> {
  protected:
-  typedef proto2_unittest::TestMap_MapInt32Int32Entry_DoNotUse EntryType;
-  typedef MapField<EntryType, int32_t, int32_t, WireFormatLite::TYPE_INT32,
-                   WireFormatLite::TYPE_INT32>
-      MapFieldType;
+  typedef MapField<kEntryGlobals, int32_t, int32_t> MapFieldType;
 
   MapFieldBasePrimitiveTest()
       : arena_(GetParam() ? new Arena() : nullptr),
@@ -139,7 +141,7 @@ TEST_P(MapFieldBasePrimitiveTest, Arena) {
     (*map_field->MutableMap())[100] = 101;
 
     // Trigger conversion to repeated field.
-    map_field->GetRepeatedField();
+    (void)map_field->GetRepeatedField();
   }
 
   {
@@ -169,10 +171,7 @@ enum State { CLEAN, MAP_DIRTY, REPEATED_DIRTY };
 class MapFieldStateTest
     : public testing::TestWithParam<std::tuple<State, bool>> {
  protected:
-  typedef proto2_unittest::TestMap_MapInt32Int32Entry_DoNotUse EntryType;
-  typedef MapField<EntryType, int32_t, int32_t, WireFormatLite::TYPE_INT32,
-                   WireFormatLite::TYPE_INT32>
-      MapFieldType;
+  typedef MapField<kEntryGlobals, int32_t, int32_t> MapFieldType;
   MapFieldStateTest()
       : arena_(std::get<1>(GetParam()) ? new Arena() : nullptr),
         map_field_(arena_.get()),
@@ -199,7 +198,7 @@ class MapFieldStateTest
     MapFieldBase* map_field_base = map_field;
     Map<int32_t, int32_t>* map = map_field->MutableMap();
     (*map)[0] = 0;
-    map_field_base->GetRepeatedField();
+    (void)map_field_base->GetRepeatedField();
     Expect(map_field, CLEAN, 1, 1);
   }
 
@@ -212,7 +211,7 @@ class MapFieldStateTest
   void MakeRepeatedDirty(MapFieldType* map_field) {
     MakeMapDirty(map_field);
     MapFieldBase* map_field_base = map_field;
-    map_field_base->MutableRepeatedField();
+    (void)map_field_base->MutableRepeatedField();
     // We use map_ because we don't want to disturb the syncing
     map_field->map_.clear();
 
@@ -248,7 +247,7 @@ class MapFieldStateTest
     EXPECT_EQ(repeated_size,
               map_field->maybe_payload() == nullptr
                   ? 0
-                  : map_field->maybe_payload()->repeated_field.size());
+                  : map_field->maybe_payload()->repeated_field().size());
   }
 
   std::unique_ptr<Arena> arena_;
@@ -329,7 +328,8 @@ TEST_P(MapFieldStateTest, SwapClean) {
   ArenaHolder<MapFieldType> other(arena_.get());
   AddOneStillClean(other.get());
 
-  map_field_->Swap(other.get());
+  map_field_->Swap(/*arena=*/arena_.get(), other.get(),
+                   /*other_arena=*/arena_.get());
 
   Expect(map_field_.get(), CLEAN, 1, 1);
 
@@ -352,7 +352,8 @@ TEST_P(MapFieldStateTest, SwapMapDirty) {
   ArenaHolder<MapFieldType> other(arena_.get());
   MakeMapDirty(other.get());
 
-  map_field_->Swap(other.get());
+  map_field_->Swap(/*arena=*/arena_.get(), other.get(),
+                   /*other_arena=*/arena_.get());
 
   Expect(map_field_.get(), MAP_DIRTY, 1, 0);
 
@@ -375,7 +376,8 @@ TEST_P(MapFieldStateTest, SwapRepeatedDirty) {
   ArenaHolder<MapFieldType> other(arena_.get());
   MakeRepeatedDirty(other.get());
 
-  map_field_->Swap(other.get());
+  map_field_->Swap(/*arena=*/arena_.get(), other.get(),
+                   /*other_arena=*/arena_.get());
 
   Expect(map_field_.get(), REPEATED_DIRTY, 0, 1);
 
@@ -419,7 +421,7 @@ TEST_P(MapFieldStateTest, SpaceUsedExcludingSelf) {
 }
 
 TEST_P(MapFieldStateTest, GetMapField) {
-  map_field_base_->GetRepeatedField();
+  (void)map_field_base_->GetRepeatedField();
 
   if (state_ != REPEATED_DIRTY) {
     Expect(map_field_.get(), CLEAN, 1, 1);
@@ -429,7 +431,7 @@ TEST_P(MapFieldStateTest, GetMapField) {
 }
 
 TEST_P(MapFieldStateTest, MutableMapField) {
-  map_field_base_->MutableRepeatedField();
+  (void)map_field_base_->MutableRepeatedField();
 
   if (state_ != REPEATED_DIRTY) {
     Expect(map_field_.get(), REPEATED_DIRTY, 1, 1);
@@ -438,10 +440,7 @@ TEST_P(MapFieldStateTest, MutableMapField) {
   }
 }
 
-using MyMapField =
-    MapField<proto2_unittest::TestMap_MapInt32Int32Entry_DoNotUse, int32_t,
-             int32_t, internal::WireFormatLite::TYPE_INT32,
-             internal::WireFormatLite::TYPE_INT32>;
+using MyMapField = MapField<kEntryGlobals, int32_t, int32_t>;
 
 TEST(MapFieldTest, ConstInit) {
   // This tests that `MapField` and all its base classes can be constant

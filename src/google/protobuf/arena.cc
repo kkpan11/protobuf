@@ -57,11 +57,20 @@ inline size_t AllocationSize(size_t last_size, size_t start_size,
   return std::min(2 * last_size, max_size);
 }
 
+[[noreturn]]
+PROTOBUF_PRESERVE_ALL PROTOBUF_NOINLINE void
+MemoryAllocationFailure() noexcept {
+  ABSL_LOG(FATAL) << "Failed to allocate memory.";
+}
+
 SizedPtr AllocateMemory(const AllocationPolicy& policy, size_t size) {
-  if (policy.block_alloc == nullptr) {
-    return AllocateAtLeast(size);
+  auto result = policy.block_alloc == nullptr
+                    ? AllocateAtLeast(size)
+                    : SizedPtr{policy.block_alloc(size), size};
+  if (ABSL_PREDICT_FALSE(result.p == nullptr)) {
+    MemoryAllocationFailure();
   }
-  return {policy.block_alloc(size), size};
+  return result;
 }
 
 SizedPtr AllocateBlock(const AllocationPolicy* policy_ptr, size_t last_size,
@@ -195,11 +204,11 @@ std::vector<void*> ChunkList::PeekForTesting() {
 // It is guaranteed that this is constructed in `b`. IOW, this is not the first
 // arena and `b` cannot be sentry.
 SerialArena::SerialArena(ArenaBlock* b, ThreadSafeArena& parent)
-    : ptr_{b->Pointer(kBlockHeaderSize + ThreadSafeArena::kSerialArenaSize)},
-      limit_{b->Limit()},
-      prefetch_ptr_(
+    : prefetch_ptr_(
           b->Pointer(kBlockHeaderSize + ThreadSafeArena::kSerialArenaSize)),
       head_{b},
+      ptr_{b->Pointer(kBlockHeaderSize + ThreadSafeArena::kSerialArenaSize)},
+      limit_{b->Limit()},
       space_allocated_{b->size},
       parent_{parent} {
   ABSL_DCHECK(!b->IsSentry());
@@ -833,12 +842,8 @@ void ThreadSafeArena::AddCleanup(void* elem, void (*cleanup)(void*)) {
   GetSerialArena()->AddCleanup(elem, cleanup);
 }
 
-SerialArena* ThreadSafeArena::GetSerialArena() {
-  SerialArena* arena;
-  if (ABSL_PREDICT_FALSE(!GetSerialArenaFast(&arena))) {
-    arena = GetSerialArenaFallback(kMaxCleanupNodeSize);
-  }
-  return arena;
+SerialArena* ThreadSafeArena::GetSerialArenaSlow() {
+  return GetSerialArenaFallback(0);
 }
 
 PROTOBUF_NOINLINE
@@ -922,10 +927,10 @@ PROTOBUF_NOINLINE void* ThreadSafeArena::AllocateAlignedFallback(size_t n) {
   return GetSerialArenaFallback(n)->AllocateAligned<alloc_client>(n);
 }
 
-template void* ThreadSafeArena::AllocateAlignedFallback<
-    AllocationClient::kDefault>(size_t);
 template void*
-    ThreadSafeArena::AllocateAlignedFallback<AllocationClient::kArray>(size_t);
+ThreadSafeArena::AllocateAlignedFallback<AllocationClient::kDefault>(size_t);
+template void*
+ThreadSafeArena::AllocateAlignedFallback<AllocationClient::kArray>(size_t);
 
 void ThreadSafeArena::CleanupList() {
   if constexpr (HasMemoryPoisoning()) {

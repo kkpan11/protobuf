@@ -14,6 +14,8 @@
 #include <memory>
 #include <string>
 
+#include "absl/log/absl_check.h"
+#include "absl/strings/string_view.h"
 #include "upb/base/descriptor_constants.h"
 #include "upb/base/status.hpp"
 #include "upb/base/string_view.h"
@@ -24,9 +26,9 @@
 #include "upb/mini_table/field.h"
 #include "upb/mini_table/message.h"
 #include "upb/reflection/def.h"
+#include "upb/reflection/descriptor_bootstrap.h"
 #include "upb/reflection/internal/def_pool.h"
 #include "upb/reflection/internal/enum_def.h"
-#include "upb/reflection/message.h"
 
 // Must be last
 #include "upb/port/def.inc"
@@ -64,11 +66,13 @@ class FieldDefPtr {
   std::string MiniDescriptorEncode() const {
     upb::Arena arena;
     upb_StringView md;
-    upb_FieldDef_MiniDescriptorEncode(ptr_, arena.ptr(), &md);
+    // TODO: Change to absl::ThrowStdBadAlloc once our min absl version is above
+    // 202603
+    ABSL_CHECK(upb_FieldDef_MiniDescriptorEncode(ptr_, arena.ptr(), &md));
     return std::string(md.data, md.size);
   }
 
-  const UPB_DESC(FieldOptions) * options() const {
+  const google_protobuf_FieldOptions* options() const {
     return upb_FieldDef_Options(ptr_);
   }
 
@@ -154,7 +158,7 @@ class OneofDefPtr {
   const upb_OneofDef* ptr() const { return ptr_; }
   explicit operator bool() const { return ptr_ != nullptr; }
 
-  const UPB_DESC(OneofOptions) * options() const {
+  const google_protobuf_OneofOptions* options() const {
     return upb_OneofDef_Options(ptr_);
   }
 
@@ -199,14 +203,16 @@ class MessageDefPtr {
   MessageDefPtr() : ptr_(nullptr) {}
   explicit MessageDefPtr(const upb_MessageDef* ptr) : ptr_(ptr) {}
 
-  const UPB_DESC(MessageOptions) * options() const {
+  const google_protobuf_MessageOptions* options() const {
     return upb_MessageDef_Options(ptr_);
   }
 
   std::string MiniDescriptorEncode() const {
     upb::Arena arena;
     upb_StringView md;
-    upb_MessageDef_MiniDescriptorEncode(ptr_, arena.ptr(), &md);
+    // TODO: Change to absl::ThrowStdBadAlloc once our min absl version is above
+    // 202603
+    ABSL_CHECK(upb_MessageDef_MiniDescriptorEncode(ptr_, arena.ptr(), &md));
     return std::string(md.data, md.size);
   }
 
@@ -257,8 +263,6 @@ class MessageDefPtr {
   int extension_range_count() const {
     return upb_MessageDef_ExtensionRangeCount(ptr_);
   }
-
-  upb_Syntax syntax() const { return upb_MessageDef_Syntax(ptr_); }
 
   // These return null pointers if the field is not found.
   FieldDefPtr FindFieldByNumber(uint32_t number) const {
@@ -396,12 +400,13 @@ class EnumValDefPtr {
   EnumValDefPtr() : ptr_(nullptr) {}
   explicit EnumValDefPtr(const upb_EnumValueDef* ptr) : ptr_(ptr) {}
 
-  const UPB_DESC(EnumValueOptions) * options() const {
+  const google_protobuf_EnumValueOptions* options() const {
     return upb_EnumValueDef_Options(ptr_);
   }
 
   int32_t number() const { return upb_EnumValueDef_Number(ptr_); }
   const char* full_name() const { return upb_EnumValueDef_FullName(ptr_); }
+  const char* json_name() const { return upb_EnumValueDef_JsonName(ptr_); }
   const char* name() const { return upb_EnumValueDef_Name(ptr_); }
 
  private:
@@ -413,7 +418,7 @@ class EnumDefPtr {
   EnumDefPtr() : ptr_(nullptr) {}
   explicit EnumDefPtr(const upb_EnumDef* ptr) : ptr_(ptr) {}
 
-  const UPB_DESC(EnumOptions) * options() const {
+  const google_protobuf_EnumOptions* options() const {
     return upb_EnumDef_Options(ptr_);
   }
 
@@ -424,7 +429,9 @@ class EnumDefPtr {
   std::string MiniDescriptorEncode() const {
     upb::Arena arena;
     upb_StringView md;
-    upb_EnumDef_MiniDescriptorEncode(ptr_, arena.ptr(), &md);
+    // TODO: Change to absl::ThrowStdBadAlloc once our min absl version is above
+    // 202603
+    ABSL_CHECK(upb_EnumDef_MiniDescriptorEncode(ptr_, arena.ptr(), &md));
     return std::string(md.data, md.size);
   }
 
@@ -453,6 +460,10 @@ class EnumDefPtr {
     return EnumValDefPtr(upb_EnumDef_Value(ptr_, i));
   }
 
+  EnumValDefPtr FindValueByJsonName(const char* name) const {
+    return EnumValDefPtr(upb_EnumDef_FindByJsonName(ptr_, name));
+  }
+
   // Lookups from name to integer, returning true if found.
   EnumValDefPtr FindValueByName(const char* name) const {
     return EnumValDefPtr(upb_EnumDef_FindValueByName(ptr_, name));
@@ -477,7 +488,7 @@ class FileDefPtr {
  public:
   explicit FileDefPtr(const upb_FileDef* ptr) : ptr_(ptr) {}
 
-  const UPB_DESC(FileOptions) * options() const {
+  const google_protobuf_FileOptions* options() const {
     return upb_FileDef_Options(ptr_);
   }
 
@@ -488,9 +499,6 @@ class FileDefPtr {
 
   // Package name for definitions inside the file (eg. "foo.bar").
   const char* package() const { return upb_FileDef_Package(ptr_); }
-
-  // Syntax for the file.  Defaults to proto2.
-  upb_Syntax syntax() const { return upb_FileDef_Syntax(ptr_); }
 
   // Get the list of dependencies from the file.  These are returned in the
   // order that they were added to the FileDefPtr.
@@ -504,6 +512,13 @@ class FileDefPtr {
   }
   FileDefPtr public_dependency(int index) const {
     return FileDefPtr(upb_FileDef_PublicDependency(ptr_, index));
+  }
+
+  int option_dependency_count() const {
+    return upb_FileDef_OptionDependencyCount(ptr_);
+  }
+  const char* option_dependency(int index) const {
+    return upb_FileDef_OptionDependency(ptr_, index);
   }
 
   int toplevel_enum_count() const {
@@ -556,20 +571,24 @@ class DefPool {
 
   // Finds an entry in the symbol table with this exact name.  If not found,
   // returns NULL.
-  MessageDefPtr FindMessageByName(const char* sym) const {
-    return MessageDefPtr(upb_DefPool_FindMessageByName(ptr_.get(), sym));
+  MessageDefPtr FindMessageByName(absl::string_view sym) const {
+    return MessageDefPtr(upb_DefPool_FindMessageByNameWithSize(
+        ptr_.get(), sym.data(), sym.size()));
   }
 
-  EnumDefPtr FindEnumByName(const char* sym) const {
-    return EnumDefPtr(upb_DefPool_FindEnumByName(ptr_.get(), sym));
+  EnumDefPtr FindEnumByName(absl::string_view sym) const {
+    return EnumDefPtr(
+        upb_DefPool_FindEnumByNameWithSize(ptr_.get(), sym.data(), sym.size()));
   }
 
-  FileDefPtr FindFileByName(const char* name) const {
-    return FileDefPtr(upb_DefPool_FindFileByName(ptr_.get(), name));
+  FileDefPtr FindFileByName(absl::string_view name) const {
+    return FileDefPtr(upb_DefPool_FindFileByNameWithSize(
+        ptr_.get(), name.data(), name.size()));
   }
 
-  FieldDefPtr FindExtensionByName(const char* name) const {
-    return FieldDefPtr(upb_DefPool_FindExtensionByName(ptr_.get(), name));
+  FieldDefPtr FindExtensionByName(absl::string_view name) const {
+    return FieldDefPtr(upb_DefPool_FindExtensionByNameWithSize(
+        ptr_.get(), name.data(), name.size()));
   }
 
   void _SetPlatform(upb_MiniTablePlatform platform) {
@@ -579,7 +598,7 @@ class DefPool {
   // TODO: iteration?
 
   // Adds the given serialized FileDescriptorProto to the pool.
-  FileDefPtr AddFile(const UPB_DESC(FileDescriptorProto) * file_proto,
+  FileDefPtr AddFile(const google_protobuf_FileDescriptorProto* file_proto,
                      Status* status) {
     return FileDefPtr(
         upb_DefPool_AddFile(ptr_.get(), file_proto, status->ptr()));

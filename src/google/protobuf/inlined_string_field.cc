@@ -43,51 +43,88 @@ class InlinedStringField::ScopedCheckInvariants {
 #endif  // NDEBUG || !GOOGLE_PROTOBUF_INTERNAL_DONATE_STEAL_INLINE
 
 
-std::string* InlinedStringField::Mutable(const LazyString& /*default_value*/,
-                                         Arena* arena, bool donated,
-                                         uint32_t* donating_states,
-                                         uint32_t mask, MessageLite* msg) {
+std::string* InlinedStringField::Mutable(Arena* arena) {
   ScopedCheckInvariants invariants(this);
-  if (arena == nullptr || !donated) {
+  if (arena == nullptr) {
     return UnsafeMutablePointer();
   }
-  return MutableSlow(arena, donated, donating_states, mask, msg);
-}
-
-std::string* InlinedStringField::Mutable(Arena* arena, bool donated,
-                                         uint32_t* donating_states,
-                                         uint32_t mask, MessageLite* msg) {
-  ScopedCheckInvariants invariants(this);
-  if (arena == nullptr || !donated) {
+  if (!IsDonated()) {
+    MaybeRegisterForDestruction(arena, get_mutable());
     return UnsafeMutablePointer();
   }
-  return MutableSlow(arena, donated, donating_states, mask, msg);
+  return MutableSlow(arena);
 }
 
-std::string* InlinedStringField::MutableSlow(::google::protobuf::Arena* arena,
-                                             bool donated,
-                                             uint32_t* donating_states,
-                                             uint32_t mask, MessageLite* msg) {
-  (void)mask;
-  (void)msg;
+bool InlinedStringField::IsDonated(const std::string& str) {
+#if defined(GOOGLE_PROTOBUF_INTERNAL_DONATE_STEAL_INLINE)
+  return robber::IsLong(str) ? (robber::GetLongCap(str) & kDonatedBit) != 0
+                             : true;
+#else
+  return false;
+#endif
+}
+
+size_t InlinedStringField::SpaceUsedExcludingSelfLong() const {
+#if defined(GOOGLE_PROTOBUF_INTERNAL_DONATE_STEAL_INLINE)
+  if (robber::IsLong(str_)) {
+    // Use our accessor that strips the donation bit.
+    return Capacity();
+  }
+#endif
+  return StringSpaceUsedExcludingSelfLong(str_);
+}
+
+bool InlinedStringField::IsDonated() const { return IsDonated(str_); }
+
+bool InlinedStringField::IsLongDonated() const {
+#if defined(GOOGLE_PROTOBUF_INTERNAL_DONATE_STEAL_INLINE)
+  return robber::IsLong(str_) && IsDonated();
+#else
+  return false;
+#endif
+}
+
+size_t InlinedStringField::Capacity() const {
+#if defined(GOOGLE_PROTOBUF_INTERNAL_DONATE_STEAL_INLINE)
+  if (robber::IsLong(str_)) {
+    return (robber::GetLongCap(str_) & ~kDonatedBit) - 1;
+  }
+#endif
+  return str_.capacity();
+}
+
+void InlinedStringField::RegisterForDestruction(Arena* arena,
+                                                std::string* str) {
+  arena->OwnCustomDestructor(str, DestroyArenaString);
+}
+
+void InlinedStringField::DestroyArenaString(void* p) {
+  std::string* str = static_cast<std::string*>(p);
+  if (IsDonated(*str)) return;
+
+  str->~basic_string();
+  // Reset in case we destroy more than once.
+  ::new (p) std::string();
+}
+
+std::string* InlinedStringField::MutableSlow(::google::protobuf::Arena* arena) {
+  if (arena != nullptr) {
+    RegisterForDestruction(arena, get_mutable());
+  }
   return UnsafeMutablePointer();
 }
 
-void InlinedStringField::SetAllocated(const std::string* default_value,
-                                      std::string* value, Arena* arena,
-                                      bool donated, uint32_t* donating_states,
-                                      uint32_t mask, MessageLite* msg) {
-  (void)mask;
-  (void)msg;
-  SetAllocatedNoArena(default_value, value);
+void InlinedStringField::SetAllocated(std::string* value, Arena* arena) {
+  if (arena != nullptr && value != nullptr) {
+    MaybeRegisterForDestruction(arena, get_mutable());
+  }
+  SetAllocatedNoArena(value);
 }
 
-void InlinedStringField::Set(std::string&& value, Arena* arena, bool donated,
-                             uint32_t* donating_states, uint32_t mask,
-                             MessageLite* msg) {
-  (void)donating_states;
-  (void)mask;
-  (void)msg;
+void InlinedStringField::Set(std::string&& value, Arena* arena) {
+  if (arena != nullptr) {
+    MaybeRegisterForDestruction(arena, get_mutable());
+  }
   SetNoArena(std::move(value));
 }
 
@@ -97,9 +134,9 @@ std::string* InlinedStringField::Release() {
   return released;
 }
 
-std::string* InlinedStringField::Release(Arena* arena, bool donated) {
+std::string* InlinedStringField::Release(Arena* arena) {
   // We can not steal donated arena strings.
-  std::string* released = (arena != nullptr && donated)
+  std::string* released = (arena != nullptr && IsDonated())
                               ? new std::string(*get_mutable())
                               : new std::string(std::move(*get_mutable()));
   get_mutable()->clear();
@@ -107,8 +144,10 @@ std::string* InlinedStringField::Release(Arena* arena, bool donated) {
 }
 
 void InlinedStringField::ClearToDefault(const LazyString& default_value,
-                                        Arena* arena, bool donated) {
-  (void)arena;
+                                        Arena* arena, bool) {
+  if (arena != nullptr) {
+    MaybeRegisterForDestruction(arena, get_mutable());
+  }
   get_mutable()->assign(default_value.get());
 }
 

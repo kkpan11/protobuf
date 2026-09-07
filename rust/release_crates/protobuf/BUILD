@@ -1,15 +1,13 @@
-load("@rules_pkg//pkg:mappings.bzl", "pkg_files", "strip_prefix")
-load("@rules_pkg//pkg:tar.bzl", "pkg_tar")
+load("@rules_pkg//pkg:mappings.bzl", "pkg_filegroup", "pkg_files", "strip_prefix")
 load("//rust/release_crates:substitute_rust_release_version.bzl", "substitute_rust_release_version")
 
-pkg_tar(
+pkg_filegroup(
     name = "protobuf_crate",
     srcs = [
         ":crate_root_files",
-        "//:LICENSE",
-        "//rust:rust_protobuf_libupb_src",
-        "//rust:rust_protobuf_src_dir",
+        "//rust/release_crates:license",
     ],
+    prefix = "protobuf",
     visibility = ["//rust:__subpackages__"],
 )
 
@@ -26,10 +24,6 @@ substitute_rust_release_version(
 
 filegroup(
     name = "srcs",
-    srcs = [
-        "Cargo.toml",
-        "README.md",
-        "build.rs",
-    ],
+    srcs = ["Cargo.toml"] + glob(["**/*"]),
     visibility = ["//rust:__subpackages__"],
 )

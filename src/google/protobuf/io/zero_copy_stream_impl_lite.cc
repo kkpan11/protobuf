@@ -319,7 +319,8 @@ bool CopyingOutputStreamAdaptor::Next(void** data, int* size) {
 
 void CopyingOutputStreamAdaptor::BackUp(int count) {
   if (count == 0) {
-    Flush();
+    // TODO: Remove this suppression.
+    (void)Flush();
     return;
   }
   ABSL_CHECK_GE(count, 0);
@@ -443,7 +444,8 @@ void LimitingInputStream::BackUp(int count) {
 bool LimitingInputStream::Skip(int count) {
   if (count > limit_) {
     if (limit_ < 0) return false;
-    input_->Skip(limit_);
+    // TODO: Remove this suppression.
+    (void)input_->Skip(limit_);
     limit_ = 0;
     return false;
   } else {
@@ -468,7 +470,8 @@ bool LimitingInputStream::ReadCord(absl::Cord* cord, int count) {
     limit_ -= count;
     return true;
   }
-  input_->ReadCord(cord, limit_);
+  // TODO: Remove this suppression.
+  (void)input_->ReadCord(cord, limit_);
   limit_ = 0;
   return false;
 }
@@ -509,9 +512,11 @@ bool CordInputStream::NextChunk(size_t skip) {
 bool CordInputStream::Next(const void** data, int* size) {
   if (available_ > 0 || NextChunk(0)) {
     *data = data_ + size_ - available_;
-    *size = available_;
-    bytes_remaining_ -= available_;
-    available_ = 0;
+    size_t consumed =
+        std::min(available_, size_t{std::numeric_limits<int>::max()});
+    *size = consumed;
+    bytes_remaining_ -= consumed;
+    available_ -= consumed;
     return true;
   }
   return false;

@@ -23,6 +23,8 @@
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
 #include "absl/strings/cord.h"
+#include "absl/strings/string_view.h"
+#include "google/protobuf/class_data.h"
 #include "google/protobuf/descriptor.h"
 #include "google/protobuf/descriptor.pb.h"
 #include "google/protobuf/dynamic_message.h"
@@ -527,8 +529,6 @@ bool WireFormat::ParseAndMergeField(
             return false;
           }
         } else {
-          VerifyUTF8StringNamedField(value.data(), value.length(), PARSE,
-                                     field->full_name());
         }
         if (field->is_repeated()) {
           message_reflection->AddString(message, field, value);
@@ -653,10 +653,11 @@ struct WireFormat::MessageSetParser {
                     : reflection->MutableMessage(msg, field,
                                                  ctx->data().factory);
             const char* p;
-            // We can't use regular parse from string as we have to track
-            // proper recursion depth and descriptor pools. Spawn a new
-            // ParseContext inheriting those attributes.
-            ParseContext tmp_ctx(ParseContext::kSpawn, *ctx, &p, payload);
+            // Use Spawn to transfer all attributes for recursion.
+            // However, use Spawn<1> to decrease depth an extra time to take
+            // into account that `payload` came from a subfield.
+            ParseContext tmp_ctx(ParseContext::Spawn<1>{}, *ctx, &p, payload);
+            GOOGLE_PROTOBUF_PARSER_ASSERT(p);
             GOOGLE_PROTOBUF_PARSER_ASSERT(value->_InternalParse(p, &tmp_ctx) &&
                                            tmp_ctx.EndedAtLimit());
           }
@@ -835,13 +836,17 @@ const char* WireFormat::_InternalParseAndMergeField(
       WireTypeForFieldType(field->type())) {
     if (field->is_packable() && WireFormatLite::GetTagWireType(tag) ==
                                     WireFormatLite::WIRETYPE_LENGTH_DELIMITED) {
+      Arena* arena = msg->GetArena();
+
       switch (field->type()) {
-#define HANDLE_PACKED_TYPE(TYPE, CPPTYPE, CPPTYPE_METHOD)                   \
-  case FieldDescriptor::TYPE_##TYPE: {                                      \
-    ptr = internal::Packed##CPPTYPE_METHOD##Parser(                         \
-        reflection->MutableRepeatedFieldInternal<CPPTYPE>(msg, field), ptr, \
-        ctx);                                                               \
-    return ptr;                                                             \
+#define HANDLE_PACKED_TYPE(TYPE, CPPTYPE, CPPTYPE_METHOD)           \
+  case FieldDescriptor::TYPE_##TYPE: {                              \
+    ptr = internal::Packed##CPPTYPE_METHOD##Parser(                 \
+        reflection->MutableRepeatedFieldInternal<CPPTYPE>(          \
+            msg, field,                                             \
+            Reflection::GetRepeatedFieldIntent::kHiddenOrInternal), \
+        arena, ptr, ctx);                                           \
+    return ptr;                                                     \
   }
 
         HANDLE_PACKED_TYPE(INT32, int32_t, Int32)
@@ -863,15 +868,16 @@ const char* WireFormat::_InternalParseAndMergeField(
 #undef HANDLE_PACKED_TYPE
 
         case FieldDescriptor::TYPE_ENUM: {
-          auto rep_enum =
-              reflection->MutableRepeatedFieldInternal<int>(msg, field);
+          auto rep_enum = reflection->MutableRepeatedFieldInternal<int>(
+              msg, field,
+              Reflection::GetRepeatedFieldIntent::kHiddenOrInternal);
           if (!field->legacy_enum_field_treated_as_closed()) {
-            ptr = internal::PackedEnumParser(rep_enum, ptr, ctx);
+            ptr = internal::PackedEnumParser(rep_enum, arena, ptr, ctx);
           } else {
             return ctx->ReadPackedVarint(
-                ptr, [rep_enum, field, reflection, msg](int32_t val) {
+                ptr, [rep_enum, field, reflection, msg, arena](int32_t val) {
                   if (field->enum_type()->FindValueByNumber(val) != nullptr) {
-                    rep_enum->Add(val);
+                    rep_enum->AddWithArena(arena, val);
                   } else {
                     WriteVarint(field->number(), val,
                                 reflection->MutableUnknownFields(msg));
@@ -1000,8 +1006,6 @@ const char* WireFormat::_InternalParseAndMergeField(
             return nullptr;
           }
         } else {
-          VerifyUTF8StringNamedField(value.data(), value.length(), PARSE,
-                                     field->full_name());
         }
       }
       if (field->is_repeated()) {
@@ -1138,10 +1142,8 @@ class MapKeySorter {
                                      const Reflection* reflection,
                                      const FieldDescriptor* field) {
     std::vector<MapKey> sorted_key_list;
-    for (MapIterator it =
-             reflection->MapBegin(const_cast<Message*>(&message), field);
-         it != reflection->MapEnd(const_cast<Message*>(&message), field);
-         ++it) {
+    for (ConstMapIterator it = reflection->ConstMapBegin(&message, field);
+         it != reflection->ConstMapEnd(&message, field); ++it) {
       sorted_key_list.push_back(it.GetKey());
     }
     MapKeyComparator comparator;
@@ -1239,11 +1241,9 @@ uint8_t* WireFormat::InternalSerializeField(const FieldDescriptor* field,
               InternalSerializeMapEntry(field, *it, map_value, target, stream);
         }
       } else {
-        for (MapIterator it = message_reflection->MapBegin(
-                 const_cast<Message*>(&message), field);
-             it !=
-             message_reflection->MapEnd(const_cast<Message*>(&message), field);
-             ++it) {
+        for (ConstMapIterator it =
+                 message_reflection->ConstMapBegin(&message, field);
+             it != message_reflection->ConstMapEnd(&message, field); ++it) {
           target = InternalSerializeMapEntry(field, it.GetKey(),
                                              it.GetValueRef(), target, stream);
         }
@@ -1274,13 +1274,14 @@ uint8_t* WireFormat::InternalSerializeField(const FieldDescriptor* field,
     if (count == 0) return target;
     target = stream->EnsureSpace(target);
     switch (field->type()) {
-#define HANDLE_PRIMITIVE_TYPE(TYPE, CPPTYPE, TYPE_METHOD, CPPTYPE_METHOD)      \
-  case FieldDescriptor::TYPE_##TYPE: {                                         \
-    auto r =                                                                   \
-        message_reflection->GetRepeatedFieldInternal<CPPTYPE>(message, field); \
-    target = stream->Write##TYPE_METHOD##Packed(                               \
-        field->number(), r, FieldDataOnlyByteSize(field, message), target);    \
-    break;                                                                     \
+#define HANDLE_PRIMITIVE_TYPE(TYPE, CPPTYPE, TYPE_METHOD, CPPTYPE_METHOD)   \
+  case FieldDescriptor::TYPE_##TYPE: {                                      \
+    auto r = message_reflection->GetRepeatedFieldInternal<CPPTYPE>(         \
+        message, field,                                                     \
+        Reflection::GetRepeatedFieldIntent::kHiddenOrInternal);             \
+    target = stream->Write##TYPE_METHOD##Packed(                            \
+        field->number(), r, FieldDataOnlyByteSize(field, message), target); \
+    break;                                                                  \
   }
 
       HANDLE_PRIMITIVE_TYPE(INT32, int32_t, Int32, Int32)
@@ -1292,12 +1293,13 @@ uint8_t* WireFormat::InternalSerializeField(const FieldDescriptor* field,
       HANDLE_PRIMITIVE_TYPE(ENUM, int, Enum, Enum)
 
 #undef HANDLE_PRIMITIVE_TYPE
-#define HANDLE_PRIMITIVE_TYPE(TYPE, CPPTYPE, TYPE_METHOD, CPPTYPE_METHOD)      \
-  case FieldDescriptor::TYPE_##TYPE: {                                         \
-    auto r =                                                                   \
-        message_reflection->GetRepeatedFieldInternal<CPPTYPE>(message, field); \
-    target = stream->WriteFixedPacked(field->number(), r, target);             \
-    break;                                                                     \
+#define HANDLE_PRIMITIVE_TYPE(TYPE, CPPTYPE, TYPE_METHOD, CPPTYPE_METHOD) \
+  case FieldDescriptor::TYPE_##TYPE: {                                    \
+    auto r = message_reflection->GetRepeatedFieldInternal<CPPTYPE>(       \
+        message, field,                                                   \
+        Reflection::GetRepeatedFieldIntent::kHiddenOrInternal);           \
+    target = stream->WriteFixedPacked(field->number(), r, target);        \
+    break;                                                                \
   }
 
       HANDLE_PRIMITIVE_TYPE(FIXED32, uint32_t, Fixed32, UInt32)
@@ -1372,12 +1374,12 @@ uint8_t* WireFormat::InternalSerializeField(const FieldDescriptor* field,
       } break;
 
       case FieldDescriptor::TYPE_ENUM: {
-        const EnumValueDescriptor* value =
+        int value =
             field->is_repeated()
-                ? message_reflection->GetRepeatedEnum(message, field, j)
-                : message_reflection->GetEnum(message, field);
-        target = WireFormatLite::WriteEnumToArray(field->number(),
-                                                  value->number(), target);
+                ? message_reflection->GetRepeatedEnumValue(message, field, j)
+                : message_reflection->GetEnumValue(message, field);
+        target =
+            WireFormatLite::WriteEnumToArray(field->number(), value, target);
         break;
       }
 
@@ -1393,12 +1395,11 @@ uint8_t* WireFormat::InternalSerializeField(const FieldDescriptor* field,
                 : message_reflection->GetStringReference(message, field,
                                                          &scratch);
         if (strict_utf8_check) {
-          WireFormatLite::VerifyUtf8String(value.data(), value.length(),
-                                           WireFormatLite::SERIALIZE,
-                                           field->full_name());
+          // TODO: Remove this suppression.
+          (void)WireFormatLite::VerifyUtf8String(value.data(), value.length(),
+                                                 WireFormatLite::SERIALIZE,
+                                                 field->full_name());
         } else {
-          VerifyUTF8StringNamedField(value.data(), value.length(), SERIALIZE,
-                                     field->full_name());
         }
         target = stream->WriteString(field->number(), value, target);
         break;
@@ -1621,12 +1622,12 @@ size_t WireFormat::FieldDataOnlyByteSize(const FieldDescriptor* field,
     const MapFieldBase* map_field =
         message_reflection->GetMapData(message, field);
     if (map_field->IsMapValid()) {
-      MapIterator iter(const_cast<Message*>(&message), field);
-      MapIterator end(const_cast<Message*>(&message), field);
+      ConstMapIterator iter(&message, field);
+      ConstMapIterator end(&message, field);
       const FieldDescriptor* key_field = field->message_type()->field(0);
       const FieldDescriptor* value_field = field->message_type()->field(1);
-      for (map_field->MapBegin(&iter), map_field->MapEnd(&end); iter != end;
-           ++iter) {
+      for (map_field->ConstMapBegin(&iter), map_field->ConstMapEnd(&end);
+           iter != end; ++iter) {
         size_t size = kMapEntryTagByteSize;
         size += MapKeyDataOnlyByteSize(key_field, iter.GetKey());
         size += MapValueRefDataOnlyByteSize(value_field, iter.GetValueRef());
@@ -1712,11 +1713,11 @@ size_t WireFormat::FieldDataOnlyByteSize(const FieldDescriptor* field,
       if (field->is_repeated()) {
         for (size_t j = 0; j < count; j++) {
           data_size += WireFormatLite::EnumSize(
-              message_reflection->GetRepeatedEnum(message, field, j)->number());
+              message_reflection->GetRepeatedEnumValue(message, field, j));
         }
       } else {
         data_size += WireFormatLite::EnumSize(
-            message_reflection->GetEnum(message, field)->number());
+            message_reflection->GetEnumValue(message, field));
       }
       break;
     }

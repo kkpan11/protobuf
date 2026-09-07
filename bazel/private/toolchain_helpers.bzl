@@ -26,7 +26,7 @@ def _find_toolchain(ctx, legacy_attr, toolchain_type):
             fail("No toolchains registered for '%s'." % toolchain_type)
         return toolchain.proto
     else:
-        return getattr(ctx.attr, legacy_attr)[ProtoLangToolchainInfo]
+        return getattr(ctx.attr, "_" + legacy_attr)[ProtoLangToolchainInfo]
 
 def _use_toolchain(toolchain_type):
     if _incompatible_toolchain_resolution:
